@@ -1,0 +1,7 @@
+# Local product artifacts
+The Aegis Handbook.pdf
+
+# Common editor and OS artifacts
+.DS_Store
+Thumbs.db
+*.log
