@@ -1,0 +1,9 @@
+Aegis is not a Linux security product with future Windows/macOS support. Cross-platform adaptability is a first-class architectural requirement. The Core must be OS-independent from its first implementation.
+
+Aegis must dynamically discover the host environment, determine available system/security/telemetry capabilities and permissions, select appropriate observation mechanisms, normalize their output into a Universal Event Model, and expose that normalized information to the Core.
+
+Do not hard-code assumptions about one OS into Core logic. OS-specific functionality must live behind platform adapters/capability providers.
+
+Design this architecture for Linux, Windows and macOS from Day 1. Implementation may proceed incrementally, but adding another OS later must primarily require implementing its adapter/providers rather than rewriting Core.
+
+Before writing implementation code, investigate and reason about the appropriate observation mechanisms available on each OS, their permissions, limitations, security implications, performance characteristics and fallback strategies. Do not invent APIs or telemetry capabilities.
