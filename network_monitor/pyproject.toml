@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "network-monitor"
+version = "0.1.0"
+description = "AEGIS Network Monitor - OS-independent network telemetry foundation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+recommended = ["psutil>=5.9"]
+
+# The network_monitor Python package is discovered via the network_monitor/
+# junction that points to network-monitor/ in the project root.
+# Root of discovery is The-Aegis/ (one level up from network-monitor/).
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["network_monitor*"]

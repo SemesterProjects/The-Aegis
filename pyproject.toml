@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-core"
+version = "0.1.0"
+description = "Cross-platform, safety-governed endpoint monitoring core"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+enhanced = ["psutil>=5.9"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["aegis_core*"]

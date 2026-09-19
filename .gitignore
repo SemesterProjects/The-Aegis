@@ -5,3 +5,18 @@ The Aegis Handbook.pdf
 .DS_Store
 Thumbs.db
 *.log
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+env/
+venv/
+
+# Local runtime & symlink artifacts
+network_events.jsonl
+network_monitor
