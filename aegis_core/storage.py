@@ -19,6 +19,7 @@ class EvidenceStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        self._closed = False
         self._lock = threading.RLock()
         with self._connection:
             self._connection.executescript("""
@@ -38,7 +39,19 @@ class EvidenceStore:
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
+            if not self._closed:
+                self._connection.close()
+                self._closed = True
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def count_events(self) -> int:
+        with self._lock:
+            row = self._connection.execute("SELECT count(*) AS cnt FROM events").fetchone()
+            return int(row["cnt"]) if row else 0
 
     def append_event(self, event: Event) -> None:
         payload = json.dumps(event.canonical(), sort_keys=True, separators=(",", ":"))

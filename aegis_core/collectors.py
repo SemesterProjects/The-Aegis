@@ -9,6 +9,7 @@ import socket
 from typing import Iterable, Protocol
 
 from .models import Event, EventKind
+from .network import NetworkCollector
 
 
 class Collector(Protocol):

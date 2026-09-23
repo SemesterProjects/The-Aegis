@@ -33,7 +33,7 @@ for p in (_the_aegis_dir, _net_mon_dir):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-if sys.platform == "win32":
+if sys.platform == "win32" and "pytest" not in sys.modules:
     import io
     try:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")

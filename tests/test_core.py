@@ -86,8 +86,7 @@ class CoreTests(unittest.TestCase):
             recovered_status = engine.status()
             self.assertEqual(collector.calls, 2)
             self.assertEqual(recovered_status["collectors"][0]["failures"], 0)
-            self.assertTrue(recovered_status["evidence_chain_valid"])
-            engine.stop()
+            engine.close()
 
     def test_bounded_runner_collects_immediately_and_stops(self) -> None:
         class CountingCollector:
@@ -106,6 +105,29 @@ class CoreTests(unittest.TestCase):
             engine.run_for(0.07)
             self.assertGreaterEqual(collector.calls, 2)
             self.assertTrue(engine.status()["stopped"])
+            # Evidence store remains usable for post-run statistics
+            total = engine.store.count_events()
+            self.assertGreaterEqual(total, 2)
+            self.assertTrue(engine.store.verify_chain())
+            self.assertFalse(engine.store.is_closed)
+            # Exactly one close during final cleanup
+            engine.close()
+            self.assertTrue(engine.store.is_closed)
+
+    def test_cli_bounded_run_lifecycle_queries_store_before_close(self) -> None:
+        import io
+        from unittest.mock import patch
+        from aegis_core.__main__ import main
+
+        with tempfile.TemporaryDirectory() as temporary:
+            args = ["aegis_core", "--data-dir", temporary, "--interval-seconds", "0.02", "--run-seconds", "0.06", "--no-network"]
+            with patch("sys.argv", args), patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+                ret = main()
+                self.assertEqual(ret, 0)
+                output = mock_stdout.getvalue()
+                self.assertIn("bounded monitoring run completed", output)
+                self.assertIn("chain_valid=True", output)
+                self.assertIn("events=", output)
 
 
 if __name__ == "__main__":

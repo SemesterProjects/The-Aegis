@@ -15,3 +15,7 @@ test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 include = ["aegis_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

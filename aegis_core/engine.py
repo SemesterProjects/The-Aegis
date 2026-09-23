@@ -65,6 +65,7 @@ class MonitoringEngine:
         self._stopped = threading.Event()
         self._started = False
         self._closed = False
+        self._stopped_event_emitted = False
         self._last_health_at: datetime | None = None
         self._collector_runtime = {collector.name: CollectorRuntime() for collector in self.collectors}
 
@@ -146,12 +147,28 @@ class MonitoringEngine:
         }
 
     def stop(self) -> None:
+        """Stop the monitoring collection loop and emit the stopped health event."""
+        if self._stopped.is_set():
+            return
         self._stopped.set()
+        if self._started and not self._closed and not self._stopped_event_emitted:
+            self._ingest(Event(EventKind.HEALTH, "engine", {"status": "stopped"}, host_id=self.config.host_id))
+            self._stopped_event_emitted = True
+
+    def close(self) -> None:
+        """Close the evidence store and release resources. Called once during final cleanup."""
+        self.stop()
         if self._closed:
             return
-        self._ingest(Event(EventKind.HEALTH, "engine", {"status": "stopped"}, host_id=self.config.host_id))
         self.store.close()
         self._closed = True
+
+    def __enter__(self) -> MonitoringEngine:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()
 
     def _emit_health_if_due(self, now: datetime) -> None:
         if self._last_health_at and now - self._last_health_at < timedelta(seconds=self.config.health_interval_seconds):
