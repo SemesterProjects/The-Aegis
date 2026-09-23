@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Iterator
+from typing import Any, Iterator
 
 from .models import Event, Finding
 
@@ -34,6 +34,9 @@ class EvidenceStore:
               finding_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, severity TEXT NOT NULL,
               payload TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_events_observed_at ON events(observed_at);
+            CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+            CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at);
             """)
 
     def close(self) -> None:
@@ -71,12 +74,136 @@ class EvidenceStore:
             previous = row["record_hash"]
         return True
 
-    def recent_events(self, since: datetime) -> list[Event]:
+    def recent_events(self, since: datetime) -> list[dict]:
         with self._lock:
-            rows = self._connection.execute("SELECT payload FROM events WHERE observed_at >= ? ORDER BY sequence", (since.isoformat(),)).fetchall()
-        # Deliberately return canonical dictionaries at API boundaries in the future;
-        # detection gets live events directly to avoid unsafe implicit deserialisation.
-        return [json.loads(row["payload"]) for row in rows]  # type: ignore[return-value]
+            rows = self._connection.execute(
+                "SELECT payload FROM events WHERE observed_at >= ? ORDER BY sequence",
+                (since.isoformat(),)
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Rich query API (added for Timeline and CorrelationIndex)
+    # ------------------------------------------------------------------
+
+    def query_events(
+        self,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        kinds: list[str] | None = None,
+        sources: list[str] | None = None,
+        host_ids: list[str] | None = None,
+        action: str | None = None,
+        pid: int | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Query events with filters. Returns list of canonical dicts ordered by sequence ASC.
+
+        Filters action and pid via SQLite json_extract() on SQLite >= 3.38.0,
+        otherwise falls back to Python-side filtering.
+        """
+        query = "SELECT payload FROM events WHERE 1=1"
+        params: list[Any] = []
+
+        if since is not None:
+            query += " AND observed_at >= ?"
+            params.append(since.isoformat())
+        if until is not None:
+            query += " AND observed_at <= ?"
+            params.append(until.isoformat())
+        if kinds:
+            placeholders = ",".join("?" * len(kinds))
+            query += f" AND kind IN ({placeholders})"
+            params.extend(kinds)
+        if sources:
+            placeholders = ",".join("?" * len(sources))
+            query += f" AND source IN ({placeholders})"
+            params.extend(sources)
+        if host_ids:
+            placeholders = ",".join("?" * len(host_ids))
+            query += f" AND host_id IN ({placeholders})"
+            params.extend(host_ids)
+
+        # Use json_extract for action/pid on sufficiently new SQLite
+        use_json_extract = sqlite3.sqlite_version_info >= (3, 38, 0)
+        if use_json_extract:
+            if action is not None:
+                query += " AND json_extract(payload, '$.data.action') = ?"
+                params.append(action)
+            if pid is not None:
+                query += " AND CAST(json_extract(payload, '$.data.pid') AS INTEGER) = ?"
+                params.append(pid)
+
+        query += " ORDER BY sequence ASC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+
+        events = [json.loads(row["payload"]) for row in rows]
+
+        # Python-side fallback filter for older SQLite
+        if not use_json_extract and (action is not None or pid is not None):
+            filtered = []
+            for ev in events:
+                data = ev.get("data", {})
+                if action is not None and data.get("action") != action:
+                    continue
+                if pid is not None and data.get("pid") != pid:
+                    continue
+                filtered.append(ev)
+            events = filtered
+
+        return events
+
+    def count_events(
+        self,
+        since: datetime | None = None,
+        kinds: list[str] | None = None,
+    ) -> int:
+        """Return count of matching events."""
+        query = "SELECT COUNT(*) AS c FROM events WHERE 1=1"
+        params: list[Any] = []
+        if since is not None:
+            query += " AND observed_at >= ?"
+            params.append(since.isoformat())
+        if kinds:
+            placeholders = ",".join("?" * len(kinds))
+            query += f" AND kind IN ({placeholders})"
+            params.extend(kinds)
+        with self._lock:
+            row = self._connection.execute(query, params).fetchone()
+            return int(row["c"]) if row else 0
+
+    def get_findings(
+        self,
+        since: datetime | None = None,
+        severity: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Return findings as canonical dicts ordered by created_at DESC."""
+        query = "SELECT payload FROM findings WHERE 1=1"
+        params: list[Any] = []
+        if since is not None:
+            query += " AND created_at >= ?"
+            params.append(since.isoformat())
+        if severity is not None:
+            query += " AND severity = ?"
+            params.append(severity)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+            return [json.loads(row["payload"]) for row in rows]
+
+    def get_event_by_id(self, event_id: str) -> dict | None:
+        """Return a single event canonical dict by event_id, or None."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            return json.loads(row["payload"]) if row else None
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

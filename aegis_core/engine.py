@@ -54,9 +54,18 @@ class MonitoringEngine:
     Production mode is designed for a supervised service process. It does not
     contain response execution APIs: findings enter an external approval
     workflow rather than modifying a monitored endpoint.
+
+    Creating via build_from_capability() is the preferred production entry point.
+    The __init__ constructor remains available for explicit control (tests, etc.).
     """
-    def __init__(self, config: MonitoringConfig, *, collectors: Iterable[Collector] | None = None,
-                 pipeline: DetectionPipeline | None = None, capabilities: HostCapabilities | None = None) -> None:
+    def __init__(
+        self,
+        config: MonitoringConfig,
+        *,
+        collectors: Iterable[Collector] | None = None,
+        pipeline: DetectionPipeline | None = None,
+        capabilities: HostCapabilities | None = None,
+    ) -> None:
         self.config = config
         self.capabilities = capabilities or discover_capabilities()
         self.store = EvidenceStore(config.data_directory / "evidence.sqlite3")
@@ -67,6 +76,81 @@ class MonitoringEngine:
         self._closed = False
         self._last_health_at: datetime | None = None
         self._collector_runtime = {collector.name: CollectorRuntime() for collector in self.collectors}
+
+    # ------------------------------------------------------------------
+    # Production factory (preferred entry point)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def build_from_capability(
+        cls,
+        config: MonitoringConfig,
+        watch_roots: Iterable[Path] = (),
+        enable_auth: bool = True,
+        extra_collectors: Iterable[Collector] | None = None,
+    ) -> "MonitoringEngine":
+        """Factory that auto-discovers and initializes all available collectors.
+
+        Capability detection is honest:
+        - Collectors that cannot initialize on this OS are skipped.
+        - NetworkBridgeCollector is always included in the list; if the OS has
+          no supported network adapter it initializes but yields nothing (and
+          emits a HEALTH capability_status event on first collect()).
+
+        Args:
+            config: MonitoringConfig with data directory, environment, intervals.
+            watch_roots: File system roots to monitor for changes.
+            enable_auth: Include the AuthEventCollector if OS supports it.
+            extra_collectors: Additional collectors to include.
+
+        Returns:
+            A fully initialized MonitoringEngine ready to call start()/run_once().
+        """
+        from .collectors import (
+            NetworkBridgeCollector,
+            ProcessLifecycleCollector,
+            FileEventCollector,
+            AuthEventCollector,
+        )
+
+        collectors: list[Collector] = []
+
+        # Process lifecycle (richer than simple ProcessSnapshotCollector)
+        proc_col = ProcessLifecycleCollector()
+        if proc_col.is_available:
+            collectors.append(proc_col)
+        else:
+            # Fall back to legacy snapshot collector
+            collectors.append(ProcessSnapshotCollector())
+
+        # File events with watchdog or polling fallback
+        watch_roots_list = list(watch_roots)
+        if watch_roots_list:
+            file_col = FileEventCollector(roots=tuple(watch_roots_list))
+            file_col.initialize()
+            collectors.append(file_col)
+
+        # Network bridge (always added; reports UNAVAILABLE gracefully)
+        net_col = NetworkBridgeCollector()
+        net_col.initialize()
+        collectors.append(net_col)
+
+        # Authentication events
+        if enable_auth:
+            auth_col = AuthEventCollector()
+            auth_col.initialize()
+            if auth_col.is_available:
+                collectors.append(auth_col)
+
+        # Extra collectors from caller
+        if extra_collectors:
+            collectors.extend(extra_collectors)
+
+        return cls(config, collectors=collectors)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> None:
         """Record a transparent capability report before collecting telemetry."""
@@ -80,6 +164,7 @@ class MonitoringEngine:
             "os": self.capabilities.os_name, "release": self.capabilities.release,
             "features": sorted(self.capabilities.features), "limitations": self.capabilities.limitations,
             "elevated": self.capabilities.is_elevated,
+            "collectors": [c.name for c in self.collectors],
         }, host_id=self.config.host_id))
 
     def run_once(self) -> tuple[Finding, ...]:
@@ -149,6 +234,13 @@ class MonitoringEngine:
         self._stopped.set()
         if self._closed:
             return
+        # Close any collectors that have a close() method
+        for collector in self.collectors:
+            if hasattr(collector, "close"):
+                try:
+                    collector.close()
+                except Exception:
+                    pass
         self._ingest(Event(EventKind.HEALTH, "engine", {"status": "stopped"}, host_id=self.config.host_id))
         self.store.close()
         self._closed = True

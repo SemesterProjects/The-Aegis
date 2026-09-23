@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-enhanced = ["psutil>=5.9"]
+enhanced = ["psutil>=5.9", "watchdog>=3.0"]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
