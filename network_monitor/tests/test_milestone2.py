@@ -39,8 +39,20 @@ def run_tests():
     # 1. Initialize Adapter
     sys_info = SystemDiscovery().discover()
     adapter = AdapterFactory.create(sys_info)
-    print(f"[TEST 1] Adapter Selection: {adapter.get_adapter_info().adapter_name}")
-    assert adapter.get_adapter_info().adapter_name == "WindowsAdapter"
+    adapter_info = adapter.get_adapter_info()
+    print(f"[TEST 1] Adapter Selection: {adapter_info.adapter_name}")
+    expected_adapters = {
+        "Windows": "WindowsAdapter",
+        "Linux": "LinuxAdapter",
+        "Darwin": "MacOSAdapter",
+    }
+    expected_adapter = expected_adapters.get(sys_info.os_name)
+    assert expected_adapter is not None, (
+        f"Unsupported runtime OS {sys_info.os_name!r}; "
+        f"registered adapters: {', '.join(AdapterFactory.supported_os_names())}"
+    )
+    assert adapter_info.adapter_name == expected_adapter
+    assert adapter_info.os_name in {sys_info.os_name, "macOS"}
 
     # Check collector capabilities
     report = adapter.discover_capabilities()
