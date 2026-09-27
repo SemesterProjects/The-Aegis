@@ -6,6 +6,11 @@
 **Teammate PR ref:** `origin/pr-1` / `origin/feature/network-monitor` at `20703f0`  
 **Status:** **READY FOR MERGE**
 
+**Purva PR #2 addendum:** `origin/purva-aegis-work` at `30dd229` was merged
+into `master` as `c0c4bd0`. Its destructive replacement of the validated Core
+was resolved by retaining the Core contracts and adopting its compatible
+deterministic event-analysis layer plus the Linux eBPF struct-alignment fix.
+
 ## 1. Executive Summary
 
 The teammate PR is already an ancestor of the current master history. The current master contains the PR's substantive network implementation under the production package `network_monitor/`, connected to the Core through `NetworkBridgeCollector` and `aegis_core.normalizers`.
@@ -307,10 +312,52 @@ No duplicate PR tree was added in this integration turn. The current source alre
 
 The integration branch adds this report as the architectural record. The current master code and prior validated changes remain intact.
 
-## 19. Final Status
+## 19. Purva PR #2 Conflict Resolution
 
-# READY FOR MERGE
+The Purva PR was evaluated as a substantial rewrite rather than accepted
+wholesale.
 
-The teammate PR's validated network capabilities are already integrated into one coherent Aegis Monitoring Engine. The current implementation has one canonical UEM, one EvidenceStore, one lifecycle owner, one detection path, one Timeline, one CorrelationIndex, preserved provenance, explicit capability boundaries, and passing integrated tests.
+Retained from Purva:
 
-The duplicate hyphenated PR package must not be merged or copied into the repository. Merge this integration branch only after normal code review confirms the report and current branch diff; no commit was created by this integration work.
+- `aegis_core/analysis.py`: structured, deterministic explanations for
+        canonical process, file, network, authentication, and health events;
+- `Correlator`: explicit temporal/PID/host relationship explanations over
+        canonical events;
+- read-only `aegis_core --analyze` CLI mode using the existing EvidenceStore;
+- Linux eBPF raw-event structure alignment correction;
+- 498 focused analysis tests, adapted without removing existing Core tests.
+
+Rejected during conflict resolution:
+
+- Purva's replacement `MonitoringEngine`;
+- replacement collector, normalizer, storage, timeline, and correlation
+        contracts;
+- duplicate `aegis_core/network.py` bridge;
+- duplicate integration test path that depended on the rejected bridge;
+- CLI lifecycle changes that bypassed capability-based Core construction.
+
+The resulting engine has one lifecycle owner, one canonical UEM, one
+EvidenceStore, one detection path, one Timeline, one CorrelationIndex, and a
+compatible analysis/reporting layer over stored canonical evidence.
+
+Post-merge validation:
+
+```text
+python -m pytest -q
+138 passed
+python -m aegis_core --analyze --data-dir e2e_data
+exit code 0
+```
+
+## 20. Final Status
+
+# MERGED AND VALIDATED
+
+The teammate PR's validated network capabilities and Purva PR #2's compatible
+analysis capabilities are integrated into one coherent Aegis Monitoring
+Engine. The current implementation has one canonical UEM, one EvidenceStore,
+one lifecycle owner, one detection path, one Timeline, one CorrelationIndex,
+preserved provenance, explicit capability boundaries, and 138 passing tests.
+
+The duplicate hyphenated PR package and duplicate Purva bridge were not copied
+into the repository. The merge was performed without rewriting Git history.
