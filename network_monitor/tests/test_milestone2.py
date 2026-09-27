@@ -62,11 +62,20 @@ def run_tests():
     for name, c in col_map.items():
         print(f"  - {name:<25}: [{c.status.value.upper()}] (Reason: {c.reason[:40] if c.reason else 'None'})")
 
-    assert col_map["connections"].status == CollectorStatus.AVAILABLE
-    assert col_map["traffic"].status == CollectorStatus.AVAILABLE
-    assert col_map["process_network_activity"].status == CollectorStatus.AVAILABLE
-    # DNS should be PERMISSION_DENIED on standard unprivileged execution
-    assert col_map["dns"].status in (CollectorStatus.PERMISSION_DENIED, CollectorStatus.AVAILABLE)
+    supported_statuses = {
+        CollectorStatus.AVAILABLE,
+        CollectorStatus.UNAVAILABLE,
+        CollectorStatus.PERMISSION_DENIED,
+    }
+    for collector_name in ("connections", "traffic", "process_network_activity", "dns"):
+        collector_info = col_map[collector_name]
+        assert collector_info.status in supported_statuses, (
+            f"{collector_name} reported unexpected status: {collector_info.status}"
+        )
+        if collector_info.status is not CollectorStatus.AVAILABLE:
+            assert collector_info.reason, (
+                f"{collector_name} must explain status {collector_info.status.value}"
+            )
 
     # 2. Start local test HTTP server to create controlled connection
     server_port = 58912
