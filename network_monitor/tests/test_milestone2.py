@@ -26,13 +26,6 @@ for p in (_the_aegis_dir, _net_mon_dir):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-if sys.platform == "win32":
-    import io
-    try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    except AttributeError:
-        pass
-
 from network_monitor.discovery.system import SystemDiscovery
 from network_monitor.core.factory import AdapterFactory
 from network_monitor.core.events import ConnectionState, ConnectionDirection, CollectorStatus
@@ -129,4 +122,8 @@ def run_tests():
 
 
 if __name__ == "__main__":
+    run_tests()
+
+
+def test_milestone2_runner() -> None:
     run_tests()

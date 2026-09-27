@@ -38,7 +38,7 @@ for _p in (_this_dir, _parent_dir):
         sys.path.insert(0, _p)
 
 # Windows console encoding safeguard
-if sys.platform == "win32":
+if sys.platform == "win32" and "PYTEST_CURRENT_TEST" not in os.environ:
     try:
         sys.stdout = io.TextIOWrapper(
             sys.stdout.buffer, encoding="utf-8", errors="replace"

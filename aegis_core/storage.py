@@ -93,9 +93,10 @@ class EvidenceStore:
         kinds: list[str] | None = None,
         sources: list[str] | None = None,
         host_ids: list[str] | None = None,
+        run_id: str | None = None,
         action: str | None = None,
         pid: int | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
         offset: int = 0,
     ) -> list[dict]:
         """Query events with filters. Returns list of canonical dicts ordered by sequence ASC.
@@ -124,6 +125,9 @@ class EvidenceStore:
             placeholders = ",".join("?" * len(host_ids))
             query += f" AND host_id IN ({placeholders})"
             params.extend(host_ids)
+        if run_id is not None:
+            query += " AND json_extract(payload, '$.run_id') = ?"
+            params.append(run_id)
 
         # Use json_extract for action/pid on sufficiently new SQLite
         use_json_extract = sqlite3.sqlite_version_info >= (3, 38, 0)
@@ -135,8 +139,13 @@ class EvidenceStore:
                 query += " AND CAST(json_extract(payload, '$.data.pid') AS INTEGER) = ?"
                 params.append(pid)
 
-        query += " ORDER BY sequence ASC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        query += " ORDER BY observed_at ASC, sequence ASC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            query += " LIMIT -1 OFFSET ?"
+            params.append(offset)
 
         with self._lock:
             rows = self._connection.execute(query, params).fetchall()
@@ -161,6 +170,7 @@ class EvidenceStore:
         self,
         since: datetime | None = None,
         kinds: list[str] | None = None,
+        run_id: str | None = None,
     ) -> int:
         """Return count of matching events."""
         query = "SELECT COUNT(*) AS c FROM events WHERE 1=1"
@@ -172,6 +182,9 @@ class EvidenceStore:
             placeholders = ",".join("?" * len(kinds))
             query += f" AND kind IN ({placeholders})"
             params.extend(kinds)
+        if run_id is not None:
+            query += " AND json_extract(payload, '$.run_id') = ?"
+            params.append(run_id)
         with self._lock:
             row = self._connection.execute(query, params).fetchone()
             return int(row["c"]) if row else 0
@@ -180,7 +193,8 @@ class EvidenceStore:
         self,
         since: datetime | None = None,
         severity: str | None = None,
-        limit: int = 200,
+        run_id: str | None = None,
+        limit: int | None = 200,
     ) -> list[dict]:
         """Return findings as canonical dicts ordered by created_at DESC."""
         query = "SELECT payload FROM findings WHERE 1=1"
@@ -191,8 +205,13 @@ class EvidenceStore:
         if severity is not None:
             query += " AND severity = ?"
             params.append(severity)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        if run_id is not None:
+            query += " AND json_extract(payload, '$.run_id') = ?"
+            params.append(run_id)
+        query += " ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
         with self._lock:
             rows = self._connection.execute(query, params).fetchall()
             return [json.loads(row["payload"]) for row in rows]

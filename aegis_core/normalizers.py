@@ -284,6 +284,7 @@ def normalize_file_event(
         "suffix": p.suffix.lower() if p.suffix else None,
         "parent": str(p.parent),
         "collection_mechanism": mechanism,
+        "process_attribution": "unavailable",
     }
     if extra:
         data.update({k: v for k, v in extra.items() if v is not None})

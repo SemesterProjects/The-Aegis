@@ -1,15 +1,17 @@
 """Lifecycle orchestration for safe, continuously running monitoring."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 import threading
 import time
+import uuid
 from typing import Iterable
 
 from .capabilities import HostCapabilities, discover_capabilities
 from .collectors import Collector, ProcessSnapshotCollector, stable_host_id
+from .correlation import CorrelationIndex
 from .detection import DetectionPipeline
 from .models import Environment, Event, EventKind, Finding, utc_now
 from .storage import EvidenceStore
@@ -23,6 +25,7 @@ class MonitoringConfig:
     health_interval_seconds: float = 60.0
     max_collector_backoff_seconds: float = 300.0
     host_id: str = field(default_factory=stable_host_id)
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def __post_init__(self) -> None:
         if self.interval_seconds <= 0 or self.health_interval_seconds <= 0:
@@ -65,12 +68,14 @@ class MonitoringEngine:
         collectors: Iterable[Collector] | None = None,
         pipeline: DetectionPipeline | None = None,
         capabilities: HostCapabilities | None = None,
+        correlation: CorrelationIndex | None = None,
     ) -> None:
         self.config = config
         self.capabilities = capabilities or discover_capabilities()
         self.store = EvidenceStore(config.data_directory / "evidence.sqlite3")
         self.collectors = tuple(collectors or (ProcessSnapshotCollector(),))
         self.pipeline = pipeline or DetectionPipeline()
+        self.correlation = correlation or CorrelationIndex()
         self._stopped = threading.Event()
         self._started = False
         self._closed = False
@@ -135,12 +140,12 @@ class MonitoringEngine:
         net_col.initialize()
         collectors.append(net_col)
 
-        # Authentication events
+        # Authentication events — cursor persisted in data directory
         if enable_auth:
             auth_col = AuthEventCollector()
-            auth_col.initialize()
-            if auth_col.is_available:
-                collectors.append(auth_col)
+            cursor_file = config.data_directory / ".aegis_auth_cursor"
+            auth_col.initialize(cursor_file=cursor_file)
+            collectors.append(auth_col)
 
         # Extra collectors from caller
         if extra_collectors:
@@ -256,8 +261,25 @@ class MonitoringEngine:
         }, host_id=self.config.host_id))
 
     def _ingest(self, event: Event) -> tuple[Finding, ...]:
+        # Collectors remain independent of sessions; the engine stamps the
+        # canonical run and receipt time at the single ingestion boundary.
+        event = replace(event, run_id=self.config.run_id, ingested_at=utc_now())
         self.store.append_event(event)
+        try:
+            self.correlation.ingest(event.canonical())
+        except Exception as exc:
+            # The index is derived and disposable; durable evidence remains
+            # authoritative even when correlation code fails.
+            self.store.append_event(Event(
+                EventKind.HEALTH,
+                "engine",
+                {"action": "correlation_error", "error_type": type(exc).__name__,
+                 "error": str(exc)[:300]},
+                host_id=self.config.host_id,
+                run_id=self.config.run_id,
+            ))
         findings = self.pipeline.evaluate(event)
         for finding in findings:
+            finding = replace(finding, run_id=self.config.run_id)
             self.store.append_finding(finding)
         return findings

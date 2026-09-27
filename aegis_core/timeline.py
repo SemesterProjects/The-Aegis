@@ -15,7 +15,8 @@ class Timeline:
     """Query interface over the EvidenceStore with investigator-friendly methods.
 
     All time parameters accept UTC-aware datetimes. Methods returning lists
-    always order events by observation time ASC (oldest first) unless noted.
+    order by source observation time ASC, with store sequence as a deterministic
+    tie-breaker.
     """
 
     def __init__(self, store: EvidenceStore) -> None:
@@ -25,7 +26,7 @@ class Timeline:
     # Core queries
     # ------------------------------------------------------------------
 
-    def recent(self, seconds: float = 300, limit: int = 500) -> list[dict]:
+    def recent(self, seconds: float = 300, limit: int | None = None) -> list[dict]:
         """Return events from the last N seconds, ordered by observation time ASC."""
         since = datetime.now(timezone.utc) - timedelta(seconds=seconds)
         return self._store.query_events(since=since, limit=limit)
@@ -35,7 +36,7 @@ class Timeline:
         since: datetime,
         until: datetime | None = None,
         kinds: list[str] | None = None,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict]:
         """Return events in a time range, optionally filtered by kind."""
         return self._store.query_events(
@@ -53,7 +54,7 @@ class Timeline:
         where data.pid matches — giving a full picture of a process's activity.
         """
         since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
-        return self._store.query_events(since=since, pid=pid, limit=2000)
+        return self._store.query_events(since=since, pid=pid)
 
     def file_timeline(self, path: str, window_seconds: float = 300) -> list[dict]:
         """All file events for a path substring in the recent window."""
@@ -61,7 +62,6 @@ class Timeline:
         events = self._store.query_events(
             since=since,
             kinds=[EventKind.FILE.value],
-            limit=5000,
         )
         # Substring filter — covers both exact paths and parent directory queries
         return [e for e in events if path in str(e.get("data", {}).get("path", ""))]
@@ -70,20 +70,19 @@ class Timeline:
         self,
         remote_ip: str | None = None,
         pid: int | None = None,
-        limit: int = 200,
+        limit: int | None = None,
     ) -> list[dict]:
         """Network events, optionally filtered by remote IP or PID."""
         events = self._store.query_events(
             kinds=[EventKind.NETWORK.value],
             pid=pid,
-            limit=max(limit * 10, 2000),
         )
         if remote_ip:
             events = [
                 e for e in events
                 if e.get("data", {}).get("remote_ip") == remote_ip
             ]
-        return events[:limit]
+        return events if limit is None else events[:limit]
 
     def auth_timeline(self, window_seconds: float = 3600) -> list[dict]:
         """Authentication events in the recent window."""
@@ -91,7 +90,6 @@ class Timeline:
         return self._store.query_events(
             since=since,
             kinds=[EventKind.AUTHENTICATION.value],
-            limit=1000,
         )
 
     def findings_timeline(self, window_seconds: float = 3600) -> list[dict]:

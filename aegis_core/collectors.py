@@ -11,6 +11,7 @@ import subprocess
 import hashlib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
@@ -58,7 +59,7 @@ class ProcessSnapshotCollector:
 class FilePollingCollector:
     """Tracks metadata changes in explicit allow-listed roots, never symlinks."""
     roots: tuple[Path, ...]
-    max_files_per_cycle: int = 10_000
+    max_files_per_cycle: int | None = None
     name: str = "file_polling"
     _snapshot: dict[Path, tuple[int, int]] = field(default_factory=dict, init=False)
 
@@ -70,7 +71,7 @@ class FilePollingCollector:
             if not root.is_dir():
                 continue
             for path in root.rglob("*"):
-                if observed >= self.max_files_per_cycle:
+                if self.max_files_per_cycle is not None and observed >= self.max_files_per_cycle:
                     yield Event(EventKind.HEALTH, self.name, {"warning": "file scan capped", "cap": self.max_files_per_cycle}, host_id=host_id)
                     break
                 try:
@@ -168,6 +169,11 @@ class NetworkBridgeCollector:
 
     def collect(self, host_id: str) -> Iterable[Event]:
         if not self._available:
+            yield Event(EventKind.HEALTH, self.name, {
+                "action": "capability_status",
+                "status": "unavailable",
+                "reason": self._init_error or "network adapter unavailable",
+            }, host_id=host_id)
             return
 
         from .normalizers import (
@@ -237,22 +243,27 @@ class NetworkBridgeCollector:
 
 # ---------------------------------------------------------------------------
 # NEW: ProcessLifecycleCollector
+# BUG FIX: First cycle no longer emits PROCESS_START for all live processes.
+#           Cycle 0 establishes the baseline snapshot silently.
+#           START events are only emitted from cycle 1 onwards for NEW pids.
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ProcessLifecycleCollector:
-    """Continuously observes process lifecycle (START / EXIT) events and
-    periodically emits full process snapshots.
+    """Continuously observes process lifecycle (START / EXIT) events.
 
-    Mechanism: psutil snapshot diffing (cross-platform). Falls back to
-    /proc enumeration on Linux if psutil is not installed.
+    FIX applied: On the very first collect() call the snapshot is empty.
+    We now treat that as a "baseline establishment" cycle:
+      - No PROCESS_START events are emitted (we cannot know if a process is
+        genuinely new without a prior baseline to compare against).
+      - A full snapshot event IS emitted so the store has the baseline.
+    From cycle 1 onwards, START / EXIT events reflect genuine OS transitions.
 
-    PROCESS_START: emitted when a new PID appears since the last poll.
-    PROCESS_EXIT:  emitted when a previously-seen PID is no longer present.
+    This eliminates the ~2N first-cycle inflation where N = all running PIDs.
 
-    Documented limitation: Very short-lived processes (start AND exit
-    between two consecutive polls) cannot be observed by this mechanism.
-    This is reported in the capability status HEALTH event, not papered over.
+    Documented limitation: Very short-lived processes (start AND exit between
+    two consecutive polls) cannot be observed by this mechanism. This is
+    reported in the HEALTH event, not papered over.
     """
     name: str = "process_lifecycle"
     snapshot_every_n_cycles: int = 30
@@ -328,21 +339,31 @@ class ProcessLifecycleCollector:
             return
 
         current = self._enumerate_processes()
+        is_baseline_cycle = (self._cycle_count == 0)
 
-        # PROCESS_START: new PIDs
-        for pid, info in current.items():
-            if pid not in self._snapshot:
-                yield normalize_process_start(pid, info, host_id, self.name, self._mechanism)
-
-        # PROCESS_EXIT: gone PIDs
-        for pid, info in self._snapshot.items():
-            if pid not in current:
-                yield normalize_process_exit(pid, info, host_id, self.name, self._mechanism)
-
-        # Periodic full snapshot
-        if self._cycle_count % self.snapshot_every_n_cycles == 0:
+        if is_baseline_cycle:
+            # --- CYCLE 0: establish baseline ---
+            # Emit one snapshot per process so investigation has a baseline.
+            # Do NOT emit PROCESS_START — we have no prior state to compare.
             for pid, info in current.items():
                 yield normalize_process_snapshot(pid, info, host_id, self.name, self._mechanism)
+        else:
+            # --- CYCLE 1+: diff against previous snapshot ---
+
+            # PROCESS_START: PIDs that appeared since the last snapshot
+            for pid, info in current.items():
+                if pid not in self._snapshot:
+                    yield normalize_process_start(pid, info, host_id, self.name, self._mechanism)
+
+            # PROCESS_EXIT: PIDs that disappeared since the last snapshot
+            for pid, info in self._snapshot.items():
+                if pid not in current:
+                    yield normalize_process_exit(pid, info, host_id, self.name, self._mechanism)
+
+            # Periodic full snapshot (NOT on cycle 0 — already done above)
+            if self._cycle_count % self.snapshot_every_n_cycles == 0:
+                for pid, info in current.items():
+                    yield normalize_process_snapshot(pid, info, host_id, self.name, self._mechanism)
 
         self._snapshot = current
         self._cycle_count += 1
@@ -350,6 +371,8 @@ class ProcessLifecycleCollector:
 
 # ---------------------------------------------------------------------------
 # NEW: FileEventCollector
+# FIX: Added _is_cloud_sync_path() guard to skip OneDrive/iCloud/Dropbox
+#      directories that would flood the collector with non-security events.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -360,19 +383,73 @@ class FileEventCollector:
     FSEvents on macOS) when installed. Falls back to FilePollingCollector semantics
     when watchdog is not available.
 
-    Safety model (unchanged from FilePollingCollector):
+    Safety model:
     - Monitoring is restricted to explicitly configured roots (allow-list).
     - Symlinks are never followed.
+    - Cloud-synced directories (OneDrive, Dropbox, iCloud) are automatically
+      excluded to prevent flood of non-security sync events.
     - Events are bounded per cycle via max_events_per_cycle.
     """
     roots: tuple  # tuple of Path-compatible objects
-    max_events_per_cycle: int = 500
+    max_events_per_cycle: int | None = None
+    max_queue_size: int = 10_000
     name: str = "file_events"
     _queue: Any = field(default=None, init=False, repr=False)
     _observer: Any = field(default=None, init=False, repr=False)
     _mechanism: str = field(default="", init=False)
     _fallback_collector: Any = field(default=None, init=False, repr=False)
     _initialized: bool = field(default=False, init=False)
+    _active_roots: list = field(default_factory=list, init=False)
+    _skipped_roots: list = field(default_factory=list, init=False)
+    _dropped_events: int = field(default=0, init=False)
+
+    @staticmethod
+    def _is_cloud_sync_path(path: Path) -> bool:
+        """Return True if path is inside a known cloud sync directory.
+
+        These directories generate high-frequency non-security events
+        and must be excluded from security monitoring.
+        """
+        cloud_markers = {
+            "OneDrive", "Dropbox", "Google Drive", "iCloud Drive",
+            "OneDrive - Personal", "Box Sync", "Box",
+        }
+        # Check the path parts against known cloud directory names
+        path_str = str(path.resolve())
+        for marker in cloud_markers:
+            if marker in path_str:
+                return True
+        # Linux: check for ~/.dropbox, ~/Dropbox
+        home = Path.home()
+        cloud_roots = [home / "Dropbox", home / "Google Drive"]
+        for cloud_root in cloud_roots:
+            try:
+                path.resolve().relative_to(cloud_root.resolve())
+                return True
+            except ValueError:
+                pass
+        return False
+
+    def _filter_roots(self) -> tuple[list[Path], list[Path]]:
+        """Separate valid roots from cloud-sync roots."""
+        valid = []
+        skipped = []
+        for r in self.roots:
+            p = Path(r)
+            if not p.exists():
+                skipped.append((p, "does not exist"))
+                continue
+            if self._is_cloud_sync_path(p):
+                skipped.append((p, "cloud-sync directory excluded"))
+                continue
+            if p.is_symlink():
+                skipped.append((p, "symlink excluded"))
+                continue
+            if p.is_dir():
+                valid.append(p)
+            else:
+                skipped.append((p, "not a directory"))
+        return valid, skipped
 
     def initialize(self) -> None:
         """Start the underlying observer. Must be called before collect()."""
@@ -380,81 +457,123 @@ class FileEventCollector:
             return
         self._initialized = True
 
+        valid_roots, skipped = self._filter_roots()
+        self._active_roots = valid_roots
+        self._skipped_roots = skipped
+
+        if not valid_roots:
+            # All roots are invalid or cloud-sync → polling with empty roots
+            self._fallback_collector = FilePollingCollector(tuple())
+            self._mechanism = "no_valid_roots"
+            return
+
         try:
             import queue as _queue_mod
             from watchdog.observers import Observer
             from watchdog.events import FileSystemEventHandler
 
-            q: Any = _queue_mod.Queue()
+            q: Any = _queue_mod.Queue(maxsize=self.max_queue_size)
             self._queue = q
 
             class _Handler(FileSystemEventHandler):
-                def __init__(self_, the_queue: Any) -> None:
+                def __init__(self_, the_queue: Any, owner: "FileEventCollector") -> None:
                     self_.q = the_queue
+                    self_.owner = owner
+
+                def _enqueue(self_, action: str, path: str, dest_path: str | None = None) -> None:
+                    extra: dict[str, Any] = {}
+                    if dest_path:
+                        extra["dest_path"] = dest_path
+                    try:
+                        stat = Path(path).stat()
+                        extra.update({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                    except OSError:
+                        pass
+                    try:
+                        self_.q.put_nowait((action, path, extra))
+                    except _queue_mod.Full:
+                        self_.owner._dropped_events += 1
 
                 def on_created(self_, evt: Any) -> None:
                     if not evt.is_directory:
-                        self_.q.put(("create", evt.src_path, None))
+                        self_._enqueue("create", evt.src_path)
 
                 def on_modified(self_, evt: Any) -> None:
                     if not evt.is_directory:
-                        self_.q.put(("modify", evt.src_path, None))
+                        self_._enqueue("modify", evt.src_path)
 
                 def on_deleted(self_, evt: Any) -> None:
                     if not evt.is_directory:
-                        self_.q.put(("delete", evt.src_path, None))
+                        self_._enqueue("delete", evt.src_path)
 
                 def on_moved(self_, evt: Any) -> None:
                     if not evt.is_directory:
-                        self_.q.put(("rename", evt.src_path, evt.dest_path))
+                        self_._enqueue("rename", evt.src_path, evt.dest_path)
 
             observer = Observer()
-            handler = _Handler(q)
+            handler = _Handler(q, self)
             scheduled = False
-            for root in self.roots:
-                root_path = Path(root)
-                if root_path.is_dir() and not root_path.is_symlink():
-                    observer.schedule(handler, str(root_path), recursive=True)
-                    scheduled = True
+            for root_path in valid_roots:
+                observer.schedule(handler, str(root_path), recursive=True)
+                scheduled = True
 
             if scheduled:
                 observer.start()
                 self._observer = observer
                 self._mechanism = "watchdog"
             else:
-                # No valid roots — fall through to polling
                 raise RuntimeError("no valid roots for watchdog observer")
 
         except (ImportError, RuntimeError, Exception):
             # watchdog not installed or no valid roots: fall back to polling
-            roots_paths = tuple(Path(r) for r in self.roots)
-            self._fallback_collector = FilePollingCollector(roots_paths)
+            self._fallback_collector = FilePollingCollector(tuple(valid_roots))
             self._mechanism = "polling"
 
     @property
     def is_available(self) -> bool:
-        return bool(self.roots and any(Path(r).is_dir() for r in self.roots))
+        valid, _ = self._filter_roots()
+        return bool(valid)
 
     def collect(self, host_id: str) -> Iterable[Event]:
         if not self._initialized:
             self.initialize()
 
-        if not self.is_available:
+        # Report skipped roots as HEALTH events (once per init cycle)
+        for skip_path, reason in self._skipped_roots:
+            yield Event(EventKind.HEALTH, self.name,
+                        {"action": "root_skipped", "path": str(skip_path), "reason": reason},
+                        host_id=host_id)
+        self._skipped_roots = []  # Report only once
+
+        if self._dropped_events:
+            dropped = self._dropped_events
+            self._dropped_events = 0
+            yield Event(EventKind.HEALTH, self.name, {
+                "action": "backpressure",
+                "status": "degraded",
+                "dropped_events": dropped,
+                "queue_capacity": self.max_queue_size,
+                "reason": "watchdog queue capacity exceeded",
+            }, host_id=host_id)
+
+        if not self._active_roots:
             return
 
-        if self._mechanism == "polling" and self._fallback_collector is not None:
-            yield from self._fallback_collector.collect(host_id)
+        if self._mechanism in ("polling", "no_valid_roots"):
+            if self._fallback_collector is not None:
+                yield from self._fallback_collector.collect(host_id)
             return
 
         # Drain the watchdog queue
         from .normalizers import normalize_file_event
         count = 0
-        while self._queue is not None and not self._queue.empty() and count < self.max_events_per_cycle:
+        while self._queue is not None and not self._queue.empty() and (
+            self.max_events_per_cycle is None or count < self.max_events_per_cycle
+        ):
             try:
-                action, src_path, dest_path = self._queue.get_nowait()
+                action, src_path, extra = self._queue.get_nowait()
             except Exception:
                 break
-            extra = {"dest_path": dest_path} if dest_path else None
             yield normalize_file_event(
                 action, src_path, host_id, self.name, self._mechanism, extra
             )
@@ -471,6 +590,8 @@ class FileEventCollector:
 
 # ---------------------------------------------------------------------------
 # NEW: AuthEventCollector
+# FIX: Cursor is now persisted to disk so successive runs do not re-deliver
+#      historical journal entries. Each run only reads NEW auth events.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -481,23 +602,50 @@ class AuthEventCollector:
     events. Falls back to reading /var/log/auth.log if journalctl is unavailable.
 
     Windows: Reads the Security Event Log via wevtutil subprocess call.
-    Event IDs: 4624 (logon success), 4625 (logon failure), 4648 (explicit
-    credentials), 4672 (special privilege), 4634 (logoff).
 
-    Privilege requirements are reported honestly:
-    - journalctl typically works without root on systemd systems.
-    - /var/log/auth.log requires read permission (usually root or adm group).
-    - Windows Security Event Log requires Administrator for most event types.
+    FIX applied: The journalctl cursor is now persisted to a file in the
+    data directory. On restart, the cursor is loaded from disk, ensuring
+    only NEW entries are delivered — not the last 200 historical entries
+    that were re-read on every process restart before this fix.
     """
     name: str = "auth_events"
-    _last_cursor: str = field(default="", init=False)  # journalctl cursor
+    cursor_file: Any = field(default=None)   # Path | None; set via initialize(cursor_file=...)
+    _last_cursor: str = field(default="", init=False)
     _last_winevt_time: str = field(default="", init=False)
+    _last_winevt_record_id: int = field(default=0, init=False)
     _mechanism: str = field(default="", init=False)
     _available: bool = field(default=False, init=False)
     _status_reason: str = field(default="", init=False)
+    _status_reported: bool = field(default=False, init=False)
 
-    def initialize(self) -> None:
-        """Detect available auth log mechanism for this OS."""
+    def initialize(self, cursor_file: Any = None) -> None:
+        """Detect available auth log mechanism for this OS.
+
+        Args:
+            cursor_file: Optional Path to persist the journalctl cursor.
+                         When provided, the cursor is loaded on start and
+                         saved after each collection cycle, preventing
+                         re-delivery of historical events on restart.
+        """
+        if cursor_file is not None:
+            self.cursor_file = Path(cursor_file)
+
+        # Load persisted cursor if available
+        if self.cursor_file is not None:
+            try:
+                cursor_path = Path(self.cursor_file)
+                if cursor_path.exists():
+                    raw_cursor = cursor_path.read_text(encoding="utf-8").strip()
+                    try:
+                        state = json.loads(raw_cursor)
+                        self._last_cursor = str(state.get("journal_cursor", ""))
+                        self._last_winevt_record_id = int(state.get("event_record_id", 0))
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        # Backward-compatible Linux cursor format.
+                        self._last_cursor = raw_cursor
+            except (OSError, UnicodeError):
+                pass
+
         system = platform.system()
         if system == "Linux":
             if shutil.which("journalctl"):
@@ -520,12 +668,35 @@ class AuthEventCollector:
             self._available = False
             self._status_reason = f"unsupported OS: {system}"
 
+    def _save_cursor(self) -> None:
+        """Persist journal and Windows event cursors atomically."""
+        if self.cursor_file is not None and (self._last_cursor or self._last_winevt_record_id):
+            try:
+                cursor_path = Path(self.cursor_file)
+                cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = cursor_path.with_suffix(cursor_path.suffix + ".tmp")
+                tmp_path.write_text(json.dumps({
+                    "journal_cursor": self._last_cursor,
+                    "event_record_id": self._last_winevt_record_id,
+                }), encoding="utf-8")
+                tmp_path.replace(cursor_path)
+            except (OSError, PermissionError):
+                pass
+
     @property
     def is_available(self) -> bool:
         return self._available
 
     def collect(self, host_id: str) -> Iterable[Event]:
         if not self._available:
+            if not self._status_reported:
+                self._status_reported = True
+                yield Event(EventKind.HEALTH, self.name, {
+                    "action": "capability_status",
+                    "status": "unavailable",
+                    "mechanism": self._mechanism or None,
+                    "reason": self._status_reason or "authentication mechanism unavailable",
+                }, host_id=host_id)
             return
 
         from .normalizers import normalize_auth_event
@@ -538,7 +709,7 @@ class AuthEventCollector:
             yield from self._collect_wevtutil(host_id, normalize_auth_event)
 
     # ------------------------------------------------------------------
-    # Linux: journalctl
+    # Linux: journalctl (with persistent cursor)
     # ------------------------------------------------------------------
 
     _RELEVANT_IDENTS = frozenset({
@@ -570,20 +741,30 @@ class AuthEventCollector:
         return None
 
     def _extract_journal_user(self, msg: str) -> str | None:
-        # "Accepted password for alice from ..."
         m = re.search(r"(?:for|user)\s+(\S+)", msg)
         return m.group(1) if m else None
 
     def _collect_journalctl(self, host_id: str, normalize_auth_event: Any) -> Iterable[Event]:
-        cmd = ["journalctl", "-n", "200", "--output=json", "--no-pager"]
+        # With a persisted cursor, use --after-cursor to only read NEW entries.
+        # Without a cursor (first ever run), use -n 50 to limit history intake
+        # and avoid flooding with old events on first startup.
         if self._last_cursor:
-            cmd.extend(["--after-cursor", self._last_cursor])
+            cmd = ["journalctl", "--after-cursor", self._last_cursor,
+                   "--output=json", "--no-pager"]
+        else:
+            # First run: only read the very latest 50 entries (not 200)
+            # to establish an initial cursor position without replaying history.
+            cmd = ["journalctl", "-n", "50", "--output=json", "--no-pager"]
+
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return
+
+        new_cursor = self._last_cursor
+        events_yielded = 0
 
         for line in result.stdout.splitlines():
             if not line.strip():
@@ -593,14 +774,14 @@ class AuthEventCollector:
             except json.JSONDecodeError:
                 continue
 
+            # Always advance cursor to the latest processed entry
+            cursor = entry.get("__CURSOR", "")
+            if cursor:
+                new_cursor = cursor
+
             ident = entry.get("SYSLOG_IDENTIFIER", "")
             unit = entry.get("_SYSTEMD_UNIT", "")
             msg = entry.get("MESSAGE", "")
-
-            # Track cursor regardless of relevance
-            cursor = entry.get("__CURSOR", "")
-            if cursor:
-                self._last_cursor = cursor
 
             if ident not in self._RELEVANT_IDENTS and unit not in self._RELEVANT_UNITS:
                 continue
@@ -621,8 +802,21 @@ class AuthEventCollector:
                 "hostname": entry.get("_HOSTNAME"),
                 "auth_mechanism": ident,
                 "message": msg[:200],
+                "source_ip": self._extract_source_ip(msg),
             }
             yield normalize_auth_event(action, fields, host_id, self.name, self._mechanism)
+            events_yielded += 1
+
+        # Persist the updated cursor after processing
+        if new_cursor != self._last_cursor:
+            self._last_cursor = new_cursor
+            self._save_cursor()
+
+    @staticmethod
+    def _extract_source_ip(msg: str) -> str | None:
+        """Extract source IP address from journalctl auth messages."""
+        m = re.search(r"from\s+([\d\.a-fA-F:]+)\s+port", msg)
+        return m.group(1) if m else None
 
     # ------------------------------------------------------------------
     # Linux fallback: /var/log/auth.log
@@ -644,6 +838,7 @@ class AuthEventCollector:
                 "user": self._extract_journal_user(line),
                 "message": line[:200],
                 "auth_mechanism": "auth.log",
+                "source_ip": self._extract_source_ip(line),
             }
             yield normalize_auth_event(action, fields, host_id, self.name, self._mechanism)
 
@@ -660,14 +855,17 @@ class AuthEventCollector:
     }
 
     def _collect_wevtutil(self, host_id: str, normalize_auth_event: Any) -> Iterable[Event]:
-        query = (
-            "*[System[(EventID=4624 or EventID=4625 or EventID=4648 "
-            "or EventID=4672 or EventID=4634)]]"
-        )
+        event_filter = "EventID=4624 or EventID=4625 or EventID=4648 or EventID=4672 or EventID=4634"
+        if self._last_winevt_record_id:
+            query = f"*[System[({event_filter}) and EventRecordID > {self._last_winevt_record_id}]]"
+        else:
+            # First run establishes a baseline from the most recent records;
+            # subsequent runs are strictly cursor-based.
+            query = f"*[System[({event_filter})]]"
         cmd = [
             "wevtutil", "qe", "Security",
             f"/q:{query}",
-            "/f:XML", "/rd:true", "/c:100",
+            "/f:XML", "/rd:true",
         ]
         try:
             result = subprocess.run(
@@ -679,7 +877,6 @@ class AuthEventCollector:
         if not result.stdout.strip():
             return
 
-        # wevtutil outputs sequential <Event> elements; wrap in a root
         try:
             xml_str = f"<Events>{result.stdout}</Events>"
             root = ET.fromstring(xml_str)
@@ -687,6 +884,7 @@ class AuthEventCollector:
             return
 
         ns = "http://schemas.microsoft.com/win/2004/08/events/event"
+        highest_record_id = self._last_winevt_record_id
         for ev_el in root.findall(f"{{{ns}}}Event"):
             sys_el = ev_el.find(f"{{{ns}}}System")
             if sys_el is None:
@@ -695,11 +893,18 @@ class AuthEventCollector:
             if eid_el is None:
                 continue
             event_id = (eid_el.text or "").strip()
+            record_id_el = sys_el.find(f"{{{ns}}}EventRecordID")
+            try:
+                record_id = int(record_id_el.text or "0") if record_id_el is not None else 0
+            except ValueError:
+                record_id = 0
+            if record_id and record_id <= self._last_winevt_record_id:
+                continue
+            highest_record_id = max(highest_record_id, record_id)
             action = self._WIN_EVENT_ACTIONS.get(event_id)
             if not action:
                 continue
 
-            # Extract TargetUserName from EventData
             user = None
             logon_type = None
             evt_data = ev_el.find(f"{{{ns}}}EventData")
@@ -713,9 +918,23 @@ class AuthEventCollector:
 
             fields: dict[str, Any] = {
                 "user": user,
+                "event_record_id": record_id or None,
                 "windows_event_id": event_id,
                 "auth_mechanism": "WindowsSecurityLog",
                 "logon_type": logon_type,
                 "message": f"Windows Security Event {event_id}",
             }
-            yield normalize_auth_event(action, fields, host_id, self.name, self._mechanism)
+            observed_at = None
+            time_el = sys_el.find(f"{{{ns}}}TimeCreated")
+            if time_el is not None:
+                raw_time = time_el.get("SystemTime")
+                if raw_time:
+                    try:
+                        observed_at = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                    except ValueError:
+                        observed_at = None
+            yield normalize_auth_event(action, fields, host_id, self.name, self._mechanism, observed_at)
+
+        if highest_record_id > self._last_winevt_record_id:
+            self._last_winevt_record_id = highest_record_id
+            self._save_cursor()

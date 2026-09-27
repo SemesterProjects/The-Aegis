@@ -20,3 +20,7 @@ venv/
 # Local runtime & symlink artifacts
 network_events.jsonl
 network_monitor
+
+# Runtime evidence sidecars (the primary database is intentionally tracked)
+e2e_data/*.sqlite3-shm
+e2e_data/*.sqlite3-wal

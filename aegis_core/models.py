@@ -63,12 +63,16 @@ class Event:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     host_id: str = "unknown"
     schema_version: int = 1
+    run_id: str = "unknown"
+    ingested_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         if not self.source.strip():
             raise ValueError("event source is required")
         if self.observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
+        if self.ingested_at.tzinfo is None:
+            raise ValueError("ingested_at must be timezone-aware")
         # Persist a concrete copy so callers cannot mutate an event post-ingest.
         object.__setattr__(self, "data", dict(self.data))
 
@@ -91,6 +95,7 @@ class Finding:
     recommendation: str
     created_at: datetime = field(default_factory=utc_now)
     finding_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    run_id: str = "unknown"
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
