@@ -3,12 +3,52 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .capabilities import discover_capabilities
 from .collectors import FilePollingCollector, ProcessSnapshotCollector
 from .engine import MonitoringConfig, MonitoringEngine
-from .models import Environment
+from .models import Environment, Event, EventKind
+
+
+def analyze_stored_events(data_directory: Path) -> int:
+    """Render deterministic explanations for the canonical evidence store."""
+    database = data_directory / "evidence.sqlite3"
+    if not database.exists():
+        print(f"ERROR: evidence store not found: {database}")
+        return 1
+
+    from .analysis import Correlator, analyze_event, format_analyses
+    from .storage import EvidenceStore
+
+    store = EvidenceStore(database)
+    try:
+        canonical_events = store.query_events()
+        events = [
+            Event(
+                kind=EventKind(item["kind"]),
+                source=item["source"],
+                data=item.get("data", {}),
+                observed_at=datetime.fromisoformat(item["observed_at"]),
+                event_id=item["event_id"],
+                host_id=item.get("host_id", "unknown"),
+                schema_version=item.get("schema_version", 1),
+                run_id=item.get("run_id", "unknown"),
+                ingested_at=datetime.fromisoformat(item["ingested_at"])
+                if item.get("ingested_at") else datetime.fromisoformat(item["observed_at"]),
+            )
+            for item in canonical_events
+        ]
+        analyses = Correlator().correlate([analyze_event(event) for event in events])
+        print("=== AEGIS TELEMETRY ANALYSIS ===")
+        if analyses:
+            print(format_analyses(analyses))
+        else:
+            print("No canonical events found.")
+        return 0
+    finally:
+        store.close()
 
 
 def print_capability_report(watch_roots: list[Path]) -> None:
@@ -94,11 +134,17 @@ def main() -> int:
         "--legacy", action="store_true",
         help="use legacy ProcessSnapshot+FilePolling collectors instead of full pipeline"
     )
+    parser.add_argument(
+        "--analyze", action="store_true",
+        help="analyze existing canonical evidence without starting collectors"
+    )
     args = parser.parse_args()
 
     if args.capability_report:
         print_capability_report(args.watch)
         return 0
+    if args.analyze:
+        return analyze_stored_events(args.data_dir)
 
     config = MonitoringConfig(
         Environment(args.environment),

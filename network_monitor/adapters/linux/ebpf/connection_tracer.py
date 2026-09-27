@@ -58,7 +58,7 @@ from typing import Iterator, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 try:
-    from bcc import BPF as _BCC_BPF
+    from bcc import BPF as _BCC_BPF  # type: ignore[import-untyped]
     _BCC_AVAILABLE = True
 except (ImportError, Exception):
     _BCC_BPF = None  # type: ignore[misc,assignment]
@@ -171,6 +171,11 @@ class _RawEvent(ctypes.Structure):
         ("sport",        ctypes.c_uint16),
         ("dport",        ctypes.c_uint16),
         ("family",       ctypes.c_uint16),
+        # 2-byte implicit padding inserted by the C compiler to align saddr[16]
+        # to a 4-byte boundary after the u16 family field.  Without this the
+        # Python struct is 80 bytes while the C struct is 82 bytes, causing
+        # saddr, daddr and comm to be read from the wrong memory offsets.
+        ("_pad",         ctypes.c_uint8 * 2),
         ("saddr",        ctypes.c_uint8 * 16),
         ("daddr",        ctypes.c_uint8 * 16),
         ("comm",         ctypes.c_char * 16),
