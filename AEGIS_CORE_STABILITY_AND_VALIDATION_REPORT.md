@@ -1,5 +1,8 @@
 # AEGIS Core Stability and Validation Report
 
+> [!NOTE]
+> **HISTORICAL ARCHIVE:** Completed 2026-09-27. This report documents the stabilization pass for Aegis Core on Windows. Note that the intermediate test count (94 passed) in Section 23 reflects this point-in-time pass; the unified post-integration test suite subsequently expanded to **138 passing tests** (documented in [`AEGIS_ENGINE_INTEGRATION_REPORT.md`](AEGIS_ENGINE_INTEGRATION_REPORT.md)).
+
 **Date:** 2026-09-27  
 **Branch:** `master`  
 **Final status:** **READY FOR COMMIT**

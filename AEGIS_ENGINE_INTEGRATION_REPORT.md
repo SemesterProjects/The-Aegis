@@ -1,10 +1,13 @@
 # Aegis Unified Monitoring Engine Integration Report
 
+> [!NOTE]
+> **HISTORICAL ARCHIVE & INTEGRATION RECORD:** Dated 2026-09-27. This document details the architectural merge and integration between the Aegis Core and the `network_monitor` platform telemetry subsystem, including deduplication rationale and component boundaries.
+
 **Date:** 2026-09-27  
 **Integration branch:** `integration/unified-monitoring-engine`  
 **Base:** current `master` at `44ba797` (`MOnitoring engine - V2`)  
 **Teammate PR ref:** `origin/pr-1` / `origin/feature/network-monitor` at `20703f0`  
-**Status:** **READY FOR MERGE**
+**Status:** **READY FOR MERGE (Merged into master)**
 
 **Purva PR #2 addendum:** `origin/purva-aegis-work` at `30dd229` was merged
 into `master` as `c0c4bd0`. Its destructive replacement of the validated Core

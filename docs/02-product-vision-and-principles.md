@@ -54,14 +54,14 @@ The same reasoning engine should be reused by both offensive and defensive workf
 
 ## Non-goals for the MVP
 - full fleet-scale cloud orchestration
-- Windows-first support
+- proprietary single-OS lock-in (architecture remains cross-platform per `OSInstruction.txt`)
 - all-language automatic patching
-- autonomous production patching without approval
+- autonomous production patching without human approval
 
 ## Success outcomes
 Aegis succeeds when it can reliably:
 
-- observe a running Linux application
+- observe a running application across supported platforms (Linux, Windows, macOS capability boundary)
 - detect suspicious runtime behavior
 - explain why it thinks the behavior is malicious
 - correlate runtime evidence with source structure

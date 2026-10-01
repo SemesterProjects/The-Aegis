@@ -1,8 +1,12 @@
-# Aegis Lab Environment
+# Aegis Lab Environment (Historical Baseline)
+
+> [!IMPORTANT]
+> **SUPERSEDED DOCUMENT:** This file records an initial point-in-time snapshot from 2026-09-16.
+> The authoritative operating source of truth for the Hyper-V testbed is the **14-document runbook package in [`docs/lab/`](lab/README.md)** (specifically [`docs/lab/04-LAB-VM-SETUP.md`](lab/04-LAB-VM-SETUP.md) for verified current VM specifications: 2 vCPUs, 3 GB startup memory, both VMs powered off, automatic checkpoints disabled).
 
 ## Purpose
 
-This record defines the isolated Hyper-V laboratory used for authorized Aegis
+This record defines the initial isolated Hyper-V laboratory baseline used for authorized Aegis
 development and security demonstrations. It is not a production environment
 and must never be used to test external or unauthorized systems.
 

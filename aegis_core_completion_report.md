@@ -1,5 +1,8 @@
 # Aegis Core Completion Report
 
+> [!NOTE]
+> **HISTORICAL ARCHIVE:** Completed September 2026. This report records the historical implementation and architectural unification of `NetworkBridgeCollector`, `normalizers.py`, `ProcessLifecycleCollector`, `FileEventCollector`, and `AuthEventCollector` into the Aegis Core.
+
 This report outlines the work completed to integrate the existing `network_monitor` pipeline into `aegis_core` and to complete the `ProcessLifecycleCollector`, `FileEventCollector`, and `AuthEventCollector`, resulting in a unified, end-to-end telemetry observability engine.
 
 ## 1. Network Monitor Bridge Integration

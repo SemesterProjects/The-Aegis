@@ -62,5 +62,22 @@ A candidate mitigation must be validated under:
 - network exfiltration followed by command execution
 - vulnerable input processing that leads to exploitation
 
+## Current Test Implementation Status
+
+The repository currently maintains **138 automated deterministic tests** across two primary suites, executed via `python -m pytest -q`:
+
+1. **Aegis Core Test Suite (`tests/`):**
+   - `test_normalizers.py`: Verifies Universal Event Model (UEM) translation, field extraction, datetime standardisation, and handling of optional fields.
+   - `test_integration.py`: End-to-end subsystem integration testing `EvidenceStore`, cryptographic hash-chain durability, `DetectionPipeline`, `Timeline`, and `CorrelationIndex`.
+   - `test_analysis.py`: Verifies deterministic event analysis, forensic formatting, and CLI `--analyze` behavior.
+   - `test_core.py`: Validates bounded collection loop, collector error recovery, and version vault approval policies.
+   - `test_stability.py`: Tests multi-run isolation, correlation failure tolerance, and Windows event log cursor persistence.
+2. **Network Monitor Test Suite (`network_monitor/tests/`):**
+   - `test_milestone2.py` & `test_milestone3.py`: Exercises platform discovery, adapter selection, connection polling, and Linux eBPF telemetry pipelines.
+3. **Live Host Validation:**
+   - `validate_e2e.py`: Executes continuous multi-collector runs on live physical hosts, verifying live event capture and SQLite hash-chain validation across Windows and Linux environments.
+
+*Status: Unit and integration layers are implemented; workflow, adversarial, and sandbox verification layers remain planned for subsequent platform development.*
+
 ## Why this matters
 Aegis must prove both the product and the trust model. The system is only useful if the outputs are explainable and the actions are safe.

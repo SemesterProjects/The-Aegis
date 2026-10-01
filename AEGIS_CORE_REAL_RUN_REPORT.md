@@ -1,4 +1,9 @@
 
+# Aegis Core Real-Run Monitoring Report (Historical Evidence)
+
+> [!NOTE]
+> **HISTORICAL EVIDENCE:** This document contains machine-generated observation evidence and forensic output captured during a 14.7-second physical host validation run (Run ID: `91a5928bb12d44788e5d8473f082fda0`) on Windows 10 on 2026-09-27. It provides empirical validation that process, network, file, and health collectors operated concurrently with valid cryptographic hash chain verification.
+
 +========================================================================+
 |                  AEGIS CORE - MONITORING SESSION REPORT                |
 +========================================================================+

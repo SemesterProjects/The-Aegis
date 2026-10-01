@@ -22,6 +22,19 @@ Present evidence, capture approvals, and support execution with auditability.
 ### Phase 6: enterprise integration and scale
 Expand operational maturity without breaking the core architecture.
 
+## Current Implementation Progress
+
+| Phase | Focus Area | Status | Deliverables Completed |
+| --- | --- | --- | --- |
+| **Phase 0** | Product & Architecture Foundation | **Complete** | Documentation charter, system architecture, safety boundaries, data/event model, and cross-platform mandate (`OSInstruction.txt`). |
+| **Phase 1** | Observation & Runtime Understanding | **Complete** | Cross-platform `network_monitor` (Linux eBPF + polling, Windows psutil/DNS, macOS stubs), `MonitoringEngine`, collectors for process lifecycle, filesystem events (`watchdog`), authentication (`wevtutil`/`journalctl`), and network bridge. |
+| **Phase 2** | Detection & Anomaly Reasoning | **Foundation Complete** | Explainable detectors (`AuthFailureBurstDetector`, `FileChangeBurstDetector`, `NetworkRateDetector`, `NewProcessWithNetworkDetector`) generating evidence-linked `Finding` objects. |
+| **Phase 3** | Investigation & Root-Cause Localization | **Foundation Complete** | Temporal `Timeline` filtering, graph `CorrelationIndex` (process trees, entity mapping), and deterministic `EventAnalysis` with forensic terminal formatting. |
+| **Phase 4** | Mitigation Planning & Sandbox Verification | **Planned** | Verification sandbox orchestration, candidate fix ranking, isolated patch testing. |
+| **Phase 5** | Human-Reviewed Response Workflow | **Planned** | Approval-gated RBAC service, signed response plan executor, human verification dashboard. |
+| **Phase 6** | Enterprise Integration & Scale | **Planned** | Distributed fleet orchestration, SIEM integrations, continuous packaging/deployment. |
+
+
 ## Monthly sequence
 - Month 1: product understanding and architecture
 - Month 2: Linux and systems fundamentals

@@ -1,10 +1,10 @@
 # MVP Scope and Success Metrics
 
 ## MVP objective
-The MVP must prove the core hypothesis: Aegis can observe a Linux application, detect abnormal behavior, reconstruct attack progression, identify likely vulnerable code, recommend candidate fixes, verify them in a sandbox, and present the reasoning to a human for approval.
+The MVP must prove the core hypothesis: Aegis can observe a running application across supported platforms (with cross-platform architecture for Linux, Windows, and macOS from Day 1 per `OSInstruction.txt`), detect abnormal behavior, reconstruct attack progression, identify likely vulnerable code, recommend candidate fixes, verify them in a sandbox, and present the reasoning to a human for approval.
 
 ## In scope
-- runtime telemetry collection
+- cross-platform runtime telemetry collection (Linux eBPF/polling, Windows psutil/wevtutil, macOS adapters)
 - suspicious behavior detection
 - attack timeline reconstruction
 - probable root-cause localization
@@ -16,9 +16,8 @@ The MVP must prove the core hypothesis: Aegis can observe a Linux application, d
 ## Explicitly out of scope
 - broad cloud fleet orchestration
 - Kubernetes-first scale operations
-- Windows-first runtime coverage
 - generalized cross-language automatic remediation
-- autonomous production patching
+- autonomous production patching without human approval
 
 ## Functional requirements
 - telemetry must remain trustworthy and time-ordered

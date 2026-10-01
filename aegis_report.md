@@ -1,5 +1,11 @@
 # The Aegis — Codebase Analysis Report
-> **Generated:** 2026-09-22 | **Scope:** Full repository audit | **Goal:** Understand feature maturity across the entire system
+> **HISTORICAL ARCHIVE — Generated:** 2026-09-22 | **Scope:** Full repository audit (Pre-Integration Snapshot)
+> 
+> [!NOTE]
+> **HISTORICAL DOCUMENT:** This report reflects the codebase state as of **2026-09-22**, prior to the Core-to-Network bridge integration and test suite expansion.
+> - The network monitoring bridge cited as unintegrated in Section 4.3 has since been **fully implemented** (`NetworkBridgeCollector` in `aegis_core/collectors.py` and `aegis_core/normalizers.py`).
+> - The test suite has expanded from 6 tests to **138 passing automated tests**.
+> - For current post-integration architecture and status, see [`AEGIS_ENGINE_INTEGRATION_REPORT.md`](AEGIS_ENGINE_INTEGRATION_REPORT.md), [`README.md`](README.md), and [`docs/15-core-implementation-gap-analysis.md`](docs/15-core-implementation-gap-analysis.md).
 
 ---
 
