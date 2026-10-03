@@ -13,8 +13,11 @@ dependencies = []
 enhanced = ["psutil>=5.9", "watchdog>=3.0"]
 test = ["pytest>=8"]
 
+[project.scripts]
+aegis = "aegis_core.__main__:main"
+
 [tool.setuptools.packages.find]
-include = ["aegis_core*"]
+include = ["aegis_core*", "network_monitor*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "network_monitor/tests"]

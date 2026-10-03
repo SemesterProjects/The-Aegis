@@ -12,6 +12,56 @@ from .engine import MonitoringConfig, MonitoringEngine
 from .models import Environment, Event, EventKind
 
 
+def _build_engine(args: argparse.Namespace) -> MonitoringEngine:
+    config = MonitoringConfig(Environment(args.environment), args.data_dir,
+                              interval_seconds=args.interval_seconds)
+    return MonitoringEngine.build_from_capability(
+        config=config, watch_roots=args.watch, enable_auth=not args.no_auth,
+    )
+
+
+def monitor_command(argv: list[str]) -> int:
+    """Operational CLI: a foreground process plus durable stop/status files."""
+    parser = argparse.ArgumentParser(prog="aegis monitor")
+    parser.add_argument("action", choices=("start", "test", "stop", "status"))
+    parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    parser.add_argument("--environment", choices=[item.value for item in Environment], default="production")
+    parser.add_argument("--watch", type=Path, action="append", default=[])
+    parser.add_argument("--interval-seconds", type=float, default=2.0)
+    parser.add_argument("--seconds", type=float, default=10.0)
+    parser.add_argument("--no-auth", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.action == "status":
+        status = MonitoringEngine.read_runtime_status(args.data_dir)
+        if status is None:
+            print("Aegis Monitoring: NO STATUS (not started in this data directory)")
+            return 1
+        print(json_dumps(status))
+        return 0
+    if args.action == "stop":
+        MonitoringEngine.request_stop(args.data_dir)
+        print(f"Stop requested: {args.data_dir / 'monitor-stop.request'}")
+        return 0
+
+    engine = _build_engine(args)
+    try:
+        if args.action == "test":
+            engine.run_for(args.seconds)
+            print(f"Aegis monitoring test complete; events={engine.status()['event_count']}")
+        else:
+            print("Aegis monitoring started in foreground. Use `aegis monitor stop --data-dir ...` from another terminal, or Ctrl+C.")
+            engine.run_forever()
+    except KeyboardInterrupt:
+        engine.stop()
+    return 0
+
+
+def json_dumps(value: object) -> str:
+    import json
+    return json.dumps(value, indent=2, sort_keys=True, default=str)
+
+
 def analyze_stored_events(data_directory: Path) -> int:
     """Render deterministic explanations for the canonical evidence store."""
     database = data_directory / "evidence.sqlite3"
@@ -109,6 +159,8 @@ def print_capability_report(watch_roots: list[Path]) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "monitor":
+        return monitor_command(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Run one safe Aegis monitoring collection cycle")
     parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
     parser.add_argument(
@@ -146,11 +198,7 @@ def main() -> int:
     if args.analyze:
         return analyze_stored_events(args.data_dir)
 
-    config = MonitoringConfig(
-        Environment(args.environment),
-        args.data_dir,
-        interval_seconds=args.interval_seconds,
-    )
+    config = MonitoringConfig(Environment(args.environment), args.data_dir, interval_seconds=args.interval_seconds)
 
     if args.legacy:
         # Legacy mode: original simple collectors
@@ -160,11 +208,7 @@ def main() -> int:
         engine = MonitoringEngine(config, collectors=collectors)
     else:
         # Production mode: full auto-discovered pipeline
-        engine = MonitoringEngine.build_from_capability(
-            config=config,
-            watch_roots=args.watch,
-            enable_auth=not args.no_auth,
-        )
+        engine = _build_engine(args)
 
     engine.start()
     if args.run_seconds:

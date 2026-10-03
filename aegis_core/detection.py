@@ -24,6 +24,7 @@ class FileChangeBurstDetector:
         self.window = timedelta(seconds=window_seconds)
         self.threshold = threshold
         self._events: deque[Event] = deque()
+        self._triggered_in_window = False
 
     def evaluate(self, event: Event) -> Iterable[Finding]:
         # Accept both old "operation" key and new "action" key
@@ -36,8 +37,15 @@ class FileChangeBurstDetector:
             self._events.popleft()
         paths = {str(item.data.get("path", "")) for item in self._events}
         suffixes = Counter(str(item.data.get("suffix", "")) for item in self._events)
+        # Watchdog can emit several notifications for one write. Emit one
+        # finding per sustained burst; reset only after the window falls below
+        # the threshold, not merely on a duplicate file notification.
         if len(paths) < self.threshold:
+            self._triggered_in_window = False
             return ()
+        if self._triggered_in_window:
+            return ()
+        self._triggered_in_window = True
         dominant_suffix, count = suffixes.most_common(1)[0]
         confidence = min(0.95, 0.45 + (len(paths) / self.threshold) * 0.25 + (count / len(paths)) * 0.2)
         evidence = tuple(item.event_id for item in self._events)

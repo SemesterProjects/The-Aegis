@@ -1,9 +1,11 @@
-"""Lifecycle orchestration for safe, continuously running monitoring."""
+﻿"""Lifecycle orchestration for safe, continuously running monitoring."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+import json
+import os
 import threading
 import time
 import uuid
@@ -15,6 +17,7 @@ from .correlation import CorrelationIndex
 from .detection import DetectionPipeline
 from .models import Environment, Event, EventKind, Finding, utc_now
 from .storage import EvidenceStore
+from .triage import InvestigationCase, TriageEngine
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +79,16 @@ class MonitoringEngine:
         self.collectors = tuple(collectors or (ProcessSnapshotCollector(),))
         self.pipeline = pipeline or DetectionPipeline()
         self.correlation = correlation or CorrelationIndex()
+        self.triage = TriageEngine()
         self._stopped = threading.Event()
         self._started = False
         self._closed = False
         self._last_health_at: datetime | None = None
         self._collector_runtime = {collector.name: CollectorRuntime() for collector in self.collectors}
+        self._event_count = 0
+        self._case_count = 0
+        self._last_event_at: datetime | None = None
+        self._last_triage_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Production factory (preferred entry point)
@@ -140,7 +148,7 @@ class MonitoringEngine:
         net_col.initialize()
         collectors.append(net_col)
 
-        # Authentication events — cursor persisted in data directory
+        # Authentication events â€” cursor persisted in data directory
         if enable_auth:
             auth_col = AuthEventCollector()
             cursor_file = config.data_directory / ".aegis_auth_cursor"
@@ -163,6 +171,7 @@ class MonitoringEngine:
             raise RuntimeError("cannot restart a stopped MonitoringEngine; create a new instance")
         if self._started:
             return
+        self._stop_request_path.unlink(missing_ok=True)
         self._started = True
         self._ingest(Event(EventKind.HEALTH, "engine", {
             "status": "started", "environment": self.config.environment.value,
@@ -171,6 +180,7 @@ class MonitoringEngine:
             "elevated": self.capabilities.is_elevated,
             "collectors": [c.name for c in self.collectors],
         }, host_id=self.config.host_id))
+        self._write_runtime_status("running")
 
     def run_once(self) -> tuple[Finding, ...]:
         if not self._started:
@@ -182,8 +192,8 @@ class MonitoringEngine:
             if runtime.next_attempt_at and runtime.next_attempt_at > now:
                 continue
             try:
-                for event in collector.collect(self.config.host_id):
-                    findings.extend(self._ingest(event))
+                events = list(collector.collect(self.config.host_id))
+                findings.extend(self._ingest_batch(events))
                 runtime.failures = 0
                 runtime.next_attempt_at = None
                 runtime.last_success_at = now
@@ -198,12 +208,15 @@ class MonitoringEngine:
                     "status": "error", "error_type": runtime.last_error_type,
                     "retry_after_seconds": delay}, host_id=self.config.host_id))
         self._emit_health_if_due(now)
+        self._write_runtime_status("running")
         return tuple(findings)
 
     def run_forever(self) -> None:
         self.start()
         try:
             while not self._stopped.is_set():
+                if self._stop_request_path.exists():
+                    break
                 self.run_once()
                 self._stopped.wait(self.config.interval_seconds)
         finally:
@@ -231,6 +244,10 @@ class MonitoringEngine:
             "stopped": self._stopped.is_set(),
             "environment": self.config.environment.value,
             "collector_count": len(self.collectors),
+            "event_count": self._event_count,
+            "case_count": self._case_count,
+            "last_event_at": self._last_event_at.isoformat() if self._last_event_at else None,
+            "last_triage_at": self._last_triage_at.isoformat() if self._last_triage_at else None,
             "collectors": [runtime.as_event_data(name, now) for name, runtime in self._collector_runtime.items()],
             "evidence_chain_valid": self.store.verify_chain() if not self._closed else None,
         }
@@ -247,10 +264,23 @@ class MonitoringEngine:
                 except Exception:
                     pass
         self._ingest(Event(EventKind.HEALTH, "engine", {"status": "stopped"}, host_id=self.config.host_id))
+        self._write_runtime_status("stopped")
         self.store.close()
         self._closed = True
 
-    def _emit_health_if_due(self, now: datetime) -> None:
+    def _create_investigation_case(self, finding: Finding) -> InvestigationCase | None:
+        evidence = [self.store.get_event_by_id(event_id) for event_id in finding.evidence_event_ids]
+        evidence = [event for event in evidence if event is not None]
+        if not evidence:
+            return None
+        if not self.triage.should_create_case(finding.canonical(), evidence):
+            return None
+        case = self.triage.create_case(finding.canonical(), evidence, self.config.host_id, os_name=self.capabilities.os_name)
+        self.store.append_case(case)
+        self._case_count += 1
+        self._last_triage_at = utc_now()
+        return case
+    def _emit_health_if_due(self, now: datetime) -> None:
         if self._last_health_at and now - self._last_health_at < timedelta(seconds=self.config.health_interval_seconds):
             return
         self._last_health_at = now
@@ -261,25 +291,62 @@ class MonitoringEngine:
         }, host_id=self.config.host_id))
 
     def _ingest(self, event: Event) -> tuple[Finding, ...]:
-        # Collectors remain independent of sessions; the engine stamps the
-        # canonical run and receipt time at the single ingestion boundary.
-        event = replace(event, run_id=self.config.run_id, ingested_at=utc_now())
-        self.store.append_event(event)
+        return self._ingest_batch([event])
+
+    def _ingest_batch(self, events: Iterable[Event]) -> tuple[Finding, ...]:
+        """Stamp and persist one collector cycle atomically, then triage it."""
+        stamped = [replace(event, run_id=self.config.run_id, ingested_at=utc_now()) for event in events]
+        if not stamped:
+            return ()
+        self.store.append_events(stamped)
+        findings: list[Finding] = []
+        for event in stamped:
+            self._event_count += 1
+            self._last_event_at = event.observed_at
+            try:
+                self.correlation.ingest(event.canonical())
+            except Exception as exc:
+                self.store.append_event(Event(EventKind.HEALTH, "engine", {
+                    "action": "correlation_error", "error_type": type(exc).__name__,
+                    "error": str(exc)[:300]}, host_id=self.config.host_id, run_id=self.config.run_id))
+            for finding in self.pipeline.evaluate(event):
+                finding = replace(finding, run_id=self.config.run_id)
+                self.store.append_finding(finding)
+                self._create_investigation_case(finding)
+                findings.append(finding)
+        return tuple(findings)
+
+    @property
+    def _status_path(self) -> Path:
+        return self.config.data_directory / "monitor-status.json"
+
+    @property
+    def _stop_request_path(self) -> Path:
+        return self.config.data_directory / "monitor-stop.request"
+
+    @classmethod
+    def request_stop(cls, data_directory: Path) -> None:
+        """Request a foreground monitor to stop on its next loop boundary."""
+        data_directory.mkdir(parents=True, exist_ok=True)
+        (data_directory / "monitor-stop.request").write_text("stop\n", encoding="utf-8")
+
+    @classmethod
+    def read_runtime_status(cls, data_directory: Path) -> dict[str, object] | None:
+        path = data_directory / "monitor-status.json"
         try:
-            self.correlation.ingest(event.canonical())
-        except Exception as exc:
-            # The index is derived and disposable; durable evidence remains
-            # authoritative even when correlation code fails.
-            self.store.append_event(Event(
-                EventKind.HEALTH,
-                "engine",
-                {"action": "correlation_error", "error_type": type(exc).__name__,
-                 "error": str(exc)[:300]},
-                host_id=self.config.host_id,
-                run_id=self.config.run_id,
-            ))
-        findings = self.pipeline.evaluate(event)
-        for finding in findings:
-            finding = replace(finding, run_id=self.config.run_id)
-            self.store.append_finding(finding)
-        return findings
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_runtime_status(self, state: str) -> None:
+        self.config.data_directory.mkdir(parents=True, exist_ok=True)
+        payload = self.status()
+        payload["state"] = state
+        payload["pid"] = os.getpid()
+        temporary = self._status_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary.replace(self._status_path)
+
+
+
+

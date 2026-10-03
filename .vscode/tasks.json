@@ -1,0 +1,97 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run baseline tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run baseline tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "No-op",
+			"type": "shell",
+			"command": "echo ready",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "No-op",
+			"type": "shell",
+			"command": "echo ok",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "No-op",
+			"type": "shell",
+			"command": "echo ok",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "No-op",
+			"type": "shell",
+			"command": "echo ok",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run syntax check",
+			"type": "shell",
+			"command": "python -m py_compile aegis_core\\triage.py aegis_core\\storage.py aegis_core\\engine.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect status",
+			"type": "shell",
+			"command": "git status --short",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
