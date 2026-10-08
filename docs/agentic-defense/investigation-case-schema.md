@@ -6,4 +6,9 @@ Required populated fields: `case_id`, `created_at`, `updated_at`, `host_id`, `se
 
 Optional-only-when-observed fields: `hostname`, `os`, `related_processes`, `related_files`, `related_network_activity`, `user_context`, `parent_process`, `child_processes`.
 
-Statuses are `NEW`, `QUEUED`, `INVESTIGATING`, `BENIGN`, `SUSPICIOUS`, `MALICIOUS`, `CLOSED`, and `ERROR`. Monitoring produces `NEW`; only the future Investigation Agent/workflow may transition it. Query a case with `EvidenceStore.get_case_by_id(case_id)` and its evidence with `query_events_for_case(case_id)`.
+Statuses are `NEW`, `QUEUED`, `INVESTIGATING`, `BENIGN`, `SUSPICIOUS`, `MALICIOUS`, `CLOSED`, and `ERROR`. Monitoring produces `NEW`; the Investigation Agent atomically claims it as `INVESTIGATING` and records the final classification status. Query a case with `EvidenceStore.get_case_by_id(case_id)` and its evidence with `query_events_for_case(case_id)`.
+
+Investigation results are stored in the same SQLite database by `case_id` and
+carry an `investigation_id`, status, classification, and evidence references.
+Repeated processing of a case returns the existing result rather than creating
+duplicate investigations.

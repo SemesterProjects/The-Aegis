@@ -360,14 +360,14 @@ The current persistence layout is:
 
 ```text
 <data-dir>/
-    evidence.sqlite3       events, findings, and investigation_cases
+    evidence.sqlite3       events, findings, investigation_cases, and results
     monitor-status.json    runtime status for the operational CLI
     monitor-stop.request   transient graceful-stop request
     .aegis_auth_cursor     authentication source cursor when auth is enabled
 ```
 
-`reports/` is reserved for the future Investigation Agent's
-`reports/investigations/<case_id>/` output. The current monitor does not write
+`reports/` is reserved for a future export surface. Investigation results are
+currently persisted in `evidence.sqlite3`; the current monitor does not write
 human-readable report files there. Preserve `evidence.sqlite3` and its WAL
 files while a case is under review.
 
@@ -571,8 +571,8 @@ provide a `cases` CLI command or an automatic periodic-report command.
 
 ## 12. Investigation Agent handoff
 
-The future Investigation Agent starts from a persisted `InvestigationCase`,
-not raw operating-system output. The contract and schema are documented in
+The Investigation Agent starts from a persisted `InvestigationCase`, not raw
+operating-system output. The contract and schema are documented in
 `docs/agentic-defense/agent-handoff.md` and
 `docs/agentic-defense/investigation-case-schema.md`.
 
@@ -588,7 +588,13 @@ evidence = store.query_events_for_case(case["case_id"])
 store.close()
 ```
 
-The future agent may correlate and classify evidence and write an investigation
-result under `reports/investigations/<case_id>/`. It must not modify collectors,
-event/case schemas, evidence tables, or case lifecycle semantics, and it must
-not execute remediation.
+Run the investigation with:
+
+```powershell
+py -m aegis_core investigate run --case-id <case-id> --data-dir <dir>
+```
+
+The agent atomically claims the case, performs bounded read-only analysis, and
+persists an idempotent result in SQLite. It must not modify collectors, event
+or evidence references, or execute remediation. See
+`docs/AEGIS_INVESTIGATION_AGENT_TEST.md` for the two-window validation.

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -39,6 +39,11 @@ class EvidenceStore:
               case_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
               severity TEXT NOT NULL, status TEXT NOT NULL, host_id TEXT NOT NULL,
               risk_score REAL NOT NULL, payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS investigation_results (
+              case_id TEXT PRIMARY KEY, investigation_id TEXT UNIQUE NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              status TEXT NOT NULL, payload TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_events_observed_at ON events(observed_at);
             CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
@@ -121,6 +126,75 @@ class EvidenceStore:
         with self._lock:
             row = self._connection.execute(query, params).fetchone()
         return int(row["c"]) if row else 0
+
+    def claim_case(self, case_id: str) -> dict[str, Any] | None:
+        """Atomically claim a NEW case for one investigation worker."""
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT payload FROM investigation_cases WHERE case_id = ? AND status = 'NEW'",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row["payload"])
+            payload["status"] = "INVESTIGATING"
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            connection.execute(
+                "UPDATE investigation_cases SET status = ?, updated_at = ?, payload = ? "
+                "WHERE case_id = ? AND status = 'NEW'",
+                ("INVESTIGATING", payload["updated_at"],
+                 json.dumps(payload, sort_keys=True, separators=(",", ":")), case_id),
+            )
+            return payload
+
+    def update_case_status(self, case_id: str, status: str) -> bool:
+        """Update a persisted case status without changing its evidence references."""
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT payload FROM investigation_cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            payload = json.loads(row["payload"])
+            updated_at = datetime.now(timezone.utc).isoformat()
+            payload["status"] = status
+            payload["updated_at"] = updated_at
+            connection.execute(
+                "UPDATE investigation_cases SET status = ?, updated_at = ?, payload = ? "
+                "WHERE case_id = ?",
+                (status, updated_at,
+                 json.dumps(payload, sort_keys=True, separators=(",", ":")), case_id),
+            )
+            return True
+
+    def append_investigation_result(self, result: Any) -> None:
+        """Persist a structured result idempotently by case ID."""
+        payload = json.dumps(result.canonical(), sort_keys=True, separators=(",", ":"))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO investigation_results "
+                "(case_id, investigation_id, created_at, updated_at, status, payload) "
+                "VALUES (?, ?, COALESCE((SELECT created_at FROM investigation_results WHERE case_id = ?), ?), ?, ?, ?)",
+                (result.case_id, result.investigation_id, result.case_id, now, now,
+                 result.status.value, payload),
+            )
+
+    def get_investigation_result(self, case_id: str) -> dict[str, Any] | None:
+        """Return the persisted result for a case, if one exists."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM investigation_results WHERE case_id = ?", (case_id,)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def query_investigation_results(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload FROM investigation_results ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
     def latest_event_time(self) -> str | None:
         with self._lock:
             row = self._connection.execute("SELECT observed_at FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
@@ -308,7 +382,5 @@ class EvidenceStore:
         with self._lock:
             with self._connection:
                 yield self._connection
-
-
 
 

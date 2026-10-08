@@ -203,12 +203,49 @@ class AuthFailureBurstDetector:
         return ()
 
 
+class ProcessCreationBurstDetector:
+    """Detect rapid process creation without relying on a process name."""
+
+    rule_id = "AEGIS-PROC-001"
+
+    def __init__(self, window_seconds: int = 10, threshold: int = 10) -> None:
+        self.window = timedelta(seconds=window_seconds)
+        self.threshold = threshold
+        self._events: deque[Event] = deque()
+        self._triggered = False
+
+    def evaluate(self, event: Event) -> Iterable[Finding]:
+        if event.kind is not EventKind.PROCESS or event.data.get("action") != "start":
+            return ()
+        self._events.append(event)
+        cutoff = event.observed_at - self.window
+        while self._events and self._events[0].observed_at < cutoff:
+            self._events.popleft()
+        if len(self._events) < self.threshold:
+            self._triggered = False
+            return ()
+        if self._triggered:
+            return ()
+        self._triggered = True
+        evidence = tuple(item.event_id for item in self._events)
+        return (Finding(
+            self.rule_id,
+            "Rapid process creation burst",
+            Severity.HIGH,
+            min(0.95, 0.55 + len(self._events) / (self.threshold * 10)),
+            evidence,
+            f"{len(self._events)} process starts were observed in {self.window.seconds} seconds.",
+            "Validate the parent process and execution context; preserve evidence before considering response.",
+        ),)
+
+
 class DetectionPipeline:
     def __init__(self, detectors: Iterable[Detector] | None = None) -> None:
         self._detectors = tuple(detectors or (
             FileChangeBurstDetector(),
             NetworkRateDetector(),
             NewProcessWithNetworkDetector(),
+            ProcessCreationBurstDetector(),
             AuthFailureBurstDetector(),
         ))
 

@@ -243,9 +243,8 @@ class NetworkBridgeCollector:
 
 # ---------------------------------------------------------------------------
 # NEW: ProcessLifecycleCollector
-# BUG FIX: First cycle no longer emits PROCESS_START for all live processes.
-#           Cycle 0 establishes the baseline snapshot silently.
-#           START events are only emitted from cycle 1 onwards for NEW pids.
+# BUG FIX: First cycle establishes the baseline without emitting one event per
+#           live process. START events are emitted from cycle 1 onwards.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -256,7 +255,8 @@ class ProcessLifecycleCollector:
     We now treat that as a "baseline establishment" cycle:
       - No PROCESS_START events are emitted (we cannot know if a process is
         genuinely new without a prior baseline to compare against).
-      - A full snapshot event IS emitted so the store has the baseline.
+      - The baseline remains collector-local; later lifecycle events carry
+        only actual transitions and periodic snapshots.
     From cycle 1 onwards, START / EXIT events reflect genuine OS transitions.
 
     This eliminates the ~2N first-cycle inflation where N = all running PIDs.
@@ -343,10 +343,10 @@ class ProcessLifecycleCollector:
 
         if is_baseline_cycle:
             # --- CYCLE 0: establish baseline ---
-            # Emit one snapshot per process so investigation has a baseline.
-            # Do NOT emit PROCESS_START — we have no prior state to compare.
-            for pid, info in current.items():
-                yield normalize_process_snapshot(pid, info, host_id, self.name, self._mechanism)
+            # Do NOT emit one event per live process. The baseline is internal;
+            # emitting it would delay the first real lifecycle poll on busy
+            # hosts and can cause short-lived process activity to be missed.
+            pass
         else:
             # --- CYCLE 1+: diff against previous snapshot ---
 

@@ -10,6 +10,7 @@ from .capabilities import discover_capabilities
 from .collectors import FilePollingCollector, ProcessSnapshotCollector
 from .engine import MonitoringConfig, MonitoringEngine
 from .models import Environment, Event, EventKind
+from .storage import EvidenceStore
 
 
 def _build_engine(args: argparse.Namespace) -> MonitoringEngine:
@@ -158,9 +159,137 @@ def print_capability_report(watch_roots: list[Path]) -> None:
         print(f"  auth_events       : UNAVAILABLE ({reason})")
 
 
+def investigate_command(argv: list[str]) -> int:
+    """Run the Investigation Agent on one persisted InvestigationCase."""
+    parser = argparse.ArgumentParser(prog="aegis investigate")
+    parser.add_argument("case_id", nargs="?", help="InvestigationCase ID (e.g. INC-ABCD1234)")
+    parser.add_argument("operation", nargs="?", choices=("run", "pending"))
+    parser.add_argument("--case-id", dest="case_id_option")
+    parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    parser.add_argument("--max-tool-calls", type=int, default=30)
+    parser.add_argument("--max-seconds", type=float, default=120.0)
+    parser.add_argument("--json", action="store_true", help="output result as JSON")
+    args = parser.parse_args(argv)
+    case_id = args.case_id_option or args.case_id
+    if args.case_id == "run":
+        case_id = args.case_id_option
+    if args.case_id == "pending" or args.operation == "pending":
+        return investigate_pending(args.data_dir, args.max_tool_calls, args.max_seconds, args.json)
+    if not case_id:
+        parser.error("provide a case ID or use `pending`")
+
+    database = args.data_dir / "evidence.sqlite3"
+    if not database.exists():
+        print(f"ERROR: evidence store not found: {database}")
+        return 1
+
+    from .investigation.agent import InvestigationAgent
+    from .investigation.state import InvestigationBudget
+    from .storage import EvidenceStore
+
+    store = EvidenceStore(database)
+    try:
+        budget = InvestigationBudget(
+            max_tool_calls=args.max_tool_calls,
+            max_investigation_time_seconds=args.max_seconds,
+        )
+        agent = InvestigationAgent(store, budget=budget)
+        result = agent.investigate(case_id)
+        if args.json:
+            print(json_dumps(result.canonical()))
+        else:
+            _print_result_summary(result)
+        return 0 if result.status.value != "ERROR" else 1
+    finally:
+        store.close()
+
+
+def investigate_pending(
+    data_dir: Path, max_tool_calls: int, max_seconds: float, as_json: bool,
+) -> int:
+    """Process all currently NEW cases, one at a time."""
+    database = data_dir / "evidence.sqlite3"
+    if not database.exists():
+        print(f"ERROR: evidence store not found: {database}")
+        return 1
+    from .investigation.agent import InvestigationAgent
+    from .investigation.state import InvestigationBudget
+    from .storage import EvidenceStore
+
+    store = EvidenceStore(database)
+    try:
+        cases = store.query_cases(status="NEW")
+        exit_code = 0
+        for case in cases:
+            result = InvestigationAgent(
+                store,
+                budget=InvestigationBudget(
+                    max_tool_calls=max_tool_calls,
+                    max_investigation_time_seconds=max_seconds,
+                ),
+            ).investigate(case["case_id"])
+            if as_json:
+                print(json_dumps(result.canonical()))
+            else:
+                _print_result_summary(result)
+            if result.status.value == "ERROR":
+                exit_code = 1
+        return exit_code
+    finally:
+        store.close()
+
+
+def _print_result_summary(result: object) -> None:
+    """Human-readable investigation result summary."""
+    from .investigation.result import InvestigationResult
+    r = result  # type: InvestigationResult  # type: ignore[assignment]
+    print("=" * 64)
+    print(f"  AEGIS INVESTIGATION RESULT")
+    print("=" * 64)
+    print(f"  Case ID        : {r.case_id}")
+    print(f"  Status         : {r.status.value}")
+    print(f"  Classification : {r.classification.value}")
+    print(f"  Confidence     : {r.confidence:.0%}")
+    print(f"  Tool calls     : {r.tool_calls_made}")
+    print(f"  Evidence used  : {len(r.evidence_ids_used)} event(s)")
+    print("-" * 64)
+    print(f"  Summary:")
+    print(f"    {r.summary}")
+    if r.timeline:
+        print("-" * 64)
+        print(f"  Timeline ({len(r.timeline)} entries):")
+        for entry in r.timeline[:15]:
+            print(f"    {entry.timestamp[:19]}  {entry.description[:80]}")
+        if len(r.timeline) > 15:
+            print(f"    ... and {len(r.timeline) - 15} more")
+    if r.supporting_evidence:
+        print("-" * 64)
+        print(f"  Supporting evidence ({len(r.supporting_evidence)}):")
+        for ev in r.supporting_evidence[:5]:
+            print(f"    [{ev.event_id[:8]}] {ev.description[:70]}")
+    if r.contradictory_evidence:
+        print("-" * 64)
+        print(f"  Contradictory evidence ({len(r.contradictory_evidence)}):")
+        for ev in r.contradictory_evidence[:3]:
+            print(f"    [{ev.event_id[:8]}] {ev.description[:70]}")
+    if r.uncertainties:
+        print("-" * 64)
+        print(f"  Uncertainties:")
+        for u in r.uncertainties:
+            print(f"    - {u}")
+    if r.recommended_actions:
+        print("-" * 64)
+        print(f"  Recommended Actions (READ-ONLY — requires human approval):")
+        for i, action in enumerate(r.recommended_actions, 1):
+            print(f"    {i}. {action}")
+    print("=" * 64)
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "monitor":
         return monitor_command(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "investigate":
+        return investigate_command(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Run one safe Aegis monitoring collection cycle")
     parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
     parser.add_argument(
@@ -210,20 +339,28 @@ def main() -> int:
         # Production mode: full auto-discovered pipeline
         engine = _build_engine(args)
 
-    engine.start()
     if args.run_seconds:
         engine.run_for(args.run_seconds)
-        total = engine.store.count_events()
-        print(f"bounded run complete — events={total} chain_valid={engine.store.verify_chain()}")
+        store = EvidenceStore(config.data_directory / "evidence.sqlite3")
+        try:
+            total = store.count_events()
+            chain_valid = store.verify_chain()
+            print(f"bounded run complete — events={total} chain_valid={chain_valid}")
+        finally:
+            store.close()
     else:
-        findings = engine.run_once()
-        total = engine.store.count_events()
-        print(
-            f"collection complete — events={total} "
-            f"findings={len(findings)} "
-            f"chain_valid={engine.store.verify_chain()}"
-        )
-        engine.stop()
+        engine.start()
+        try:
+            findings = engine.run_once()
+            total = engine.store.count_events()
+            chain_valid = engine.store.verify_chain()
+            print(
+                f"collection complete — events={total} "
+                f"findings={len(findings)} "
+                f"chain_valid={chain_valid}"
+            )
+        finally:
+            engine.stop()
 
     return 0
 

@@ -91,6 +91,7 @@ class TriageEngine:
         "file_change_burst": 0.20,
         "authentication_failure_burst": 0.20,
         "unusual_network_rate": 0.15,
+        "process_creation_burst": 0.35,
     }
 
     def __init__(self, case_threshold: float = 0.50) -> None:
@@ -118,6 +119,9 @@ class TriageEngine:
             elif "NET" in rule_id:
                 signals.append("suspicious_process_network_chain" if "PROC" in rule_id else "unusual_network_rate")
                 score += self.SIGNAL_WEIGHTS[signals[-1]]
+            elif "PROC" in rule_id:
+                signals.append("process_creation_burst")
+                score += self.SIGNAL_WEIGHTS["process_creation_burst"]
         kinds = {str(event.get("kind")) for event in events_list}
         if {"file", "network"}.issubset(kinds) and any(event.get("data", {}).get("pid") is not None for event in events_list):
             signals.append("process_file_network_correlation")
