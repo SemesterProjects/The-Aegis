@@ -152,7 +152,8 @@ def main() -> None:
         print()
         print(f"  TIMELINE ({len(result.timeline)} entries):")
         for entry in result.timeline:
-            print(f"    {entry.timestamp[11:19]} UTC  {entry.description.replace('\u2192', '->').replace('\u2014', '-')}"[:75])
+            description = entry.description.replace("\u2192", "->").replace("\u2014", "-")
+            print(f"    {entry.timestamp[11:19]} UTC  {description}"[:75])
 
         if result.supporting_evidence:
             print()

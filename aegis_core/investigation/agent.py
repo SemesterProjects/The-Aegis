@@ -116,10 +116,13 @@ class InvestigationAgent:
         self,
         store: EvidenceStore,
         budget: InvestigationBudget | None = None,
+        intelligence: Any | None = None,
     ) -> None:
         self._store = store
         self._tools = InvestigationTools(store)
         self._budget = budget or InvestigationBudget.default()
+        # Optional and downstream only. It has no access to tools or storage.
+        self._intelligence = intelligence
         self.last_state: InvestigationState | None = None
 
     # ------------------------------------------------------------------
@@ -169,6 +172,11 @@ class InvestigationAgent:
         result.agent_end_time = datetime.now(timezone.utc).isoformat()
         result.tool_calls_made = state.tool_call_count()
         result.evidence_ids_used = state.all_evidence_ids()
+        if self._intelligence is not None:
+            try:
+                result.llm_interpretation = self._intelligence.interpret(result)
+            except Exception as exc:
+                logger.warning("LLM interpretation failed safely for case_id=%s: %s", case_id, type(exc).__name__)
         self._store.append_investigation_result(result)
         final_case_status = {
             InvestigationStatus.ERROR: "ERROR",

@@ -58,6 +58,9 @@ Per project architecture (`OSInstruction.txt`), Aegis is designed as a **cross-p
 - **E2E Validation:** End-to-end real host validation is available through
   `validate_e2e.py` and the isolated procedure in the
   [Aegis Demonstration Runbook](docs/AEGIS_DEMO_RUNBOOK.md).
+- **Optional LLM interpretation:** A bounded, evidence-grounded explanation
+  layer can enrich a completed investigation without changing deterministic
+  classification or gaining host/tool access. See [LLM setup](docs/LLM_INTELLIGENCE.md).
 
 ### Quick Start / CLI Usage
 
