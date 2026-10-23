@@ -255,33 +255,198 @@ def _print_result_summary(result: object) -> None:
     print("-" * 64)
     print(f"  Summary:")
     print(f"    {r.summary}")
+    def _safe_txt(txt: str) -> str:
+        return str(txt).replace("\u2192", "->").replace("\u2014", "-")
+
     if r.timeline:
         print("-" * 64)
         print(f"  Timeline ({len(r.timeline)} entries):")
         for entry in r.timeline[:15]:
-            print(f"    {entry.timestamp[:19]}  {entry.description[:80]}")
+            print(f"    {entry.timestamp[:19]}  {_safe_txt(entry.description)[:80]}")
         if len(r.timeline) > 15:
             print(f"    ... and {len(r.timeline) - 15} more")
     if r.supporting_evidence:
         print("-" * 64)
         print(f"  Supporting evidence ({len(r.supporting_evidence)}):")
         for ev in r.supporting_evidence[:5]:
-            print(f"    [{ev.event_id[:8]}] {ev.description[:70]}")
+            print(f"    [{ev.event_id[:8]}] {_safe_txt(ev.description)[:70]}")
     if r.contradictory_evidence:
         print("-" * 64)
         print(f"  Contradictory evidence ({len(r.contradictory_evidence)}):")
         for ev in r.contradictory_evidence[:3]:
-            print(f"    [{ev.event_id[:8]}] {ev.description[:70]}")
+            print(f"    [{ev.event_id[:8]}] {_safe_txt(ev.description)[:70]}")
     if r.uncertainties:
         print("-" * 64)
         print(f"  Uncertainties:")
         for u in r.uncertainties:
-            print(f"    - {u}")
+            print(f"    - {_safe_txt(u)}")
     if r.recommended_actions:
         print("-" * 64)
-        print(f"  Recommended Actions (READ-ONLY — requires human approval):")
+        print(f"  Recommended Actions (READ-ONLY - requires human approval):")
         for i, action in enumerate(r.recommended_actions, 1):
-            print(f"    {i}. {action}")
+            print(f"    {i}. {_safe_txt(action)}")
+    print("=" * 64)
+
+
+
+
+def respond_command(argv: list[str]) -> int:
+    """Run response planning, approval, execution, or audit inspection."""
+    parser = argparse.ArgumentParser(prog="aegis respond")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+
+    plan_parser = subparsers.add_parser("plan", help="Generate response plan for a case")
+    plan_parser.add_argument("--case-id", required=True, help="InvestigationCase ID (e.g. INC-...)")
+    plan_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    plan_parser.add_argument("--json", action="store_true")
+
+    show_parser = subparsers.add_parser("show", help="Display existing response plan")
+    show_parser.add_argument("--case-id", required=True, help="InvestigationCase ID")
+    show_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    show_parser.add_argument("--json", action="store_true")
+
+    approve_parser = subparsers.add_parser("approve", help="Approve an action")
+    approve_parser.add_argument("--case-id", required=True)
+    approve_parser.add_argument("--action-id", required=True)
+    approve_parser.add_argument("--approver", required=True, help="Approver identity")
+    approve_parser.add_argument("--rationale", default="Authorized by security responder", help="Approval rationale")
+    approve_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+
+    reject_parser = subparsers.add_parser("reject", help="Reject an action")
+    reject_parser.add_argument("--case-id", required=True)
+    reject_parser.add_argument("--action-id", required=True)
+    reject_parser.add_argument("--approver", required=True)
+    reject_parser.add_argument("--rationale", default="Rejected by security responder")
+    reject_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+
+    execute_parser = subparsers.add_parser("execute", help="Execute approved/eligible actions")
+    execute_parser.add_argument("--case-id", required=True)
+    execute_parser.add_argument("--action-id", help="Optional specific action ID")
+    execute_parser.add_argument("--live", action="store_true", help="Attempt live execution (default: dry-run)")
+    execute_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    execute_parser.add_argument("--json", action="store_true")
+
+    audit_parser = subparsers.add_parser("audit", help="Inspect response audit history")
+    audit_parser.add_argument("--case-id", required=True)
+    audit_parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
+    audit_parser.add_argument("--json", action="store_true")
+
+    args = parser.parse_args(argv)
+    database = args.data_dir / "evidence.sqlite3"
+    if not database.exists():
+        print(f"ERROR: evidence store not found: {database}")
+        return 1
+
+    from .response.agent import ResponseAgent
+    from .storage import EvidenceStore
+
+    store = EvidenceStore(database)
+    try:
+        agent = ResponseAgent(store)
+        if args.action == "plan":
+            plan = agent.plan(args.case_id)
+            if args.json:
+                print(json_dumps(plan.canonical()))
+            else:
+                _print_plan_summary(plan)
+            return 0 if plan.status.value != "FAILED" else 1
+
+        elif args.action == "show":
+            plan = agent.get_plan(args.case_id)
+            if plan is None:
+                print(f"No response plan exists for case '{args.case_id}'")
+                return 1
+            if args.json:
+                print(json_dumps(plan.canonical()))
+            else:
+                _print_plan_summary(plan)
+            return 0
+
+        elif args.action == "approve":
+            try:
+                action = agent.approve_action(
+                    args.case_id, args.action_id, args.approver, args.rationale
+                )
+                print(f"Action {action.action_id} approved. Status: {action.status.value}")
+                return 0
+            except Exception as exc:
+                print(f"Approval failed: {exc}")
+                return 1
+
+        elif args.action == "reject":
+            try:
+                action = agent.reject_action(
+                    args.case_id, args.action_id, args.approver, args.rationale
+                )
+                print(f"Action {action.action_id} rejected. Status: {action.status.value}")
+                return 0
+            except Exception as exc:
+                print(f"Rejection failed: {exc}")
+                return 1
+
+        elif args.action == "execute":
+            if args.action_id:
+                action = agent.execute_action(args.case_id, args.action_id, live=args.live)
+                if args.json:
+                    print(json_dumps(action.canonical()))
+                else:
+                    print(f"Executed action {action.action_id}: status={action.status.value}")
+                    if action.execution_result:
+                        print(f"  Result: {action.execution_result.output}")
+                    if action.verification_result:
+                        print(f"  Verification: verified={action.verification_result.verified} ({action.verification_result.details})")
+            else:
+                actions = agent.execute_eligible_actions(args.case_id, live=args.live)
+                if args.json:
+                    print(json_dumps([a.canonical() for a in actions]))
+                else:
+                    print(f"Executed {len(actions)} eligible action(s) for case {args.case_id}")
+                    for a in actions:
+                        print(f"  [{a.status.value}] {a.action_type.value} -> {a.action_id}")
+            return 0
+
+        elif args.action == "audit":
+            audit = agent.get_audit_history(args.case_id)
+            print(json_dumps(audit))
+            return 0
+
+        return 0
+    finally:
+        store.close()
+
+
+def _print_plan_summary(plan: Any) -> None:
+    p = plan
+    print("=" * 64)
+    print("  AEGIS RESPONSE PLAN")
+    print("=" * 64)
+    print(f"  Response ID     : {p.response_id}")
+    print(f"  Case ID         : {p.case_id}")
+    print(f"  Investigation ID: {p.investigation_id}")
+    print(f"  Plan Status     : {p.status.value}")
+    print(f"  Risk Level      : {p.risk_assessment.business_impact} impact, {p.risk_assessment.containment_urgency} urgency")
+    print(f"  Classification  : {p.risk_assessment.classification} ({p.risk_assessment.confidence:.0%})")
+    print("-" * 64)
+    print(f"  Decision:")
+    print(f"    {p.decision}")
+    if p.actions:
+        print("-" * 64)
+        print(f"  Proposed Actions ({len(p.actions)}):")
+        for i, a in enumerate(p.actions, 1):
+            app_req = "[REQUIRES APPROVAL]" if a.requires_approval else "[NO APPROVAL REQ]"
+            print(f"    {i}. [{a.status.value}] {a.action_type.value} -> {a.target} {app_req}")
+            print(f"       Action ID: {a.action_id} | Risk: {a.risk_level.value}")
+            print(f"       Reason   : {a.reason}")
+            if a.execution_result:
+                sim_str = " (SIMULATED)" if a.execution_result.simulated else " (LIVE)"
+                print(f"       Executed : success={a.execution_result.success}{sim_str} output={a.execution_result.output}")
+            if a.verification_result:
+                print(f"       Verified : {a.verification_result.verified} via {a.verification_result.method}")
+    if p.uncertainties:
+        print("-" * 64)
+        print(f"  Uncertainties:")
+        for u in p.uncertainties:
+            print(f"    - {u}")
     print("=" * 64)
 
 
@@ -290,6 +455,8 @@ def main() -> int:
         return monitor_command(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "investigate":
         return investigate_command(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in ("respond", "response"):
+        return respond_command(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Run one safe Aegis monitoring collection cycle")
     parser.add_argument("--data-dir", type=Path, default=Path("./aegis-data"))
     parser.add_argument(
