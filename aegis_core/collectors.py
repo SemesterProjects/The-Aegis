@@ -62,6 +62,7 @@ class FilePollingCollector:
     max_files_per_cycle: int | None = None
     name: str = "file_polling"
     _snapshot: dict[Path, tuple[int, int]] = field(default_factory=dict, init=False)
+    _baseline_established: bool = field(default=False, init=False)
 
     def collect(self, host_id: str) -> Iterable[Event]:
         observed = 0
@@ -77,6 +78,8 @@ class FilePollingCollector:
                 try:
                     if path.is_symlink() or not path.is_file():
                         continue
+                    if path.name.endswith(".sqlite3") or path.name.endswith("-wal") or path.name.endswith("-shm") or path.name == "monitor-status.json":
+                        continue
                     stat = path.stat()
                 except OSError:
                     continue
@@ -88,7 +91,7 @@ class FilePollingCollector:
                     yield Event(EventKind.FILE, self.name, {"path": str(path), "action": "modify",
                         "operation": "modified", "size": stat.st_size, "previous_size": old[1],
                         "suffix": path.suffix.lower()}, host_id=host_id)
-                elif old is None and self._snapshot:
+                elif old is None and self._baseline_established:
                     yield Event(EventKind.FILE, self.name, {"path": str(path), "action": "create",
                         "operation": "created", "size": stat.st_size, "suffix": path.suffix.lower()}, host_id=host_id)
         for path, (_, old_size) in self._snapshot.items():
@@ -96,6 +99,7 @@ class FilePollingCollector:
                 yield Event(EventKind.FILE, self.name, {"path": str(path), "action": "delete",
                     "operation": "deleted", "previous_size": old_size, "suffix": path.suffix.lower()}, host_id=host_id)
         self._snapshot = current
+        self._baseline_established = True
 
 
 def stable_host_id() -> str:

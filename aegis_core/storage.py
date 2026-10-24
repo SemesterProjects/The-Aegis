@@ -45,12 +45,27 @@ class EvidenceStore:
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
               status TEXT NOT NULL, payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS response_plans (
+              response_id TEXT PRIMARY KEY, case_id TEXT UNIQUE NOT NULL,
+              investigation_id TEXT NOT NULL, created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS response_actions (
+              action_id TEXT PRIMARY KEY, response_id TEXT NOT NULL,
+              case_id TEXT NOT NULL, action_type TEXT NOT NULL,
+              status TEXT NOT NULL, risk_level TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_observed_at ON events(observed_at);
             CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
             CREATE INDEX IF NOT EXISTS idx_findings_created_at ON findings(created_at);
             CREATE INDEX IF NOT EXISTS idx_cases_created_at ON investigation_cases(created_at);
             CREATE INDEX IF NOT EXISTS idx_cases_status ON investigation_cases(status);
             CREATE INDEX IF NOT EXISTS idx_cases_host_id ON investigation_cases(host_id);
+            CREATE INDEX IF NOT EXISTS idx_response_plans_case_id ON response_plans(case_id);
+            CREATE INDEX IF NOT EXISTS idx_response_actions_response_id ON response_actions(response_id);
+            CREATE INDEX IF NOT EXISTS idx_response_actions_case_id ON response_actions(case_id);
             """)
         with self._lock:
             row = self._connection.execute("SELECT record_hash FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
@@ -193,6 +208,110 @@ class EvidenceStore:
             rows = self._connection.execute(
                 "SELECT payload FROM investigation_results ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def append_response_plan(self, plan: Any) -> None:
+        """Persist a response plan and all its actions atomically."""
+        payload = json.dumps(plan.canonical(), sort_keys=True, separators=(",", ":"))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO response_plans "
+                "(response_id, case_id, investigation_id, created_at, updated_at, status, payload) "
+                "VALUES (?, ?, ?, COALESCE((SELECT created_at FROM response_plans WHERE response_id = ?), ?), ?, ?, ?)",
+                (plan.response_id, plan.case_id, plan.investigation_id, plan.response_id, now, now,
+                 plan.status.value, payload),
+            )
+            for action in plan.actions:
+                act_payload = json.dumps(action.canonical(), sort_keys=True, separators=(",", ":"))
+                connection.execute(
+                    "INSERT OR REPLACE INTO response_actions "
+                    "(action_id, response_id, case_id, action_type, status, risk_level, created_at, updated_at, payload) "
+                    "VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM response_actions WHERE action_id = ?), ?), ?, ?)",
+                    (action.action_id, plan.response_id, plan.case_id, action.action_type.value,
+                     action.status.value, action.risk_level.value, action.action_id, now, now, act_payload),
+                )
+
+    def get_response_plan(self, response_id: str) -> dict[str, Any] | None:
+        """Return a response plan by response_id."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM response_plans WHERE response_id = ?", (response_id,)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def get_response_plan_by_case(self, case_id: str) -> dict[str, Any] | None:
+        """Return the response plan for a case, if one exists."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM response_plans WHERE case_id = ?", (case_id,)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def query_response_plans(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload FROM response_plans ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def update_response_action(self, action: Any) -> bool:
+        """Update a persisted action in response_actions and sync into response_plans."""
+        act_canonical = action.canonical()
+        action_id = action.action_id
+        now = datetime.now(timezone.utc).isoformat()
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT response_id, case_id FROM response_actions WHERE action_id = ?", (action_id,)
+            ).fetchone()
+            if not row:
+                return False
+            response_id = row["response_id"]
+            act_payload = json.dumps(act_canonical, sort_keys=True, separators=(",", ":"))
+            connection.execute(
+                "UPDATE response_actions SET status = ?, updated_at = ?, payload = ? WHERE action_id = ?",
+                (action.status.value, now, act_payload, action_id),
+            )
+            p_row = connection.execute(
+                "SELECT payload FROM response_plans WHERE response_id = ?", (response_id,)
+            ).fetchone()
+            if p_row:
+                plan_dict = json.loads(p_row["payload"])
+                actions = plan_dict.get("actions", [])
+                for i, a in enumerate(actions):
+                    if a.get("action_id") == action_id:
+                        actions[i] = act_canonical
+                        break
+                plan_dict["actions"] = actions
+                plan_dict["updated_at"] = now
+                connection.execute(
+                    "UPDATE response_plans SET updated_at = ?, payload = ? WHERE response_id = ?",
+                    (now, json.dumps(plan_dict, sort_keys=True, separators=(",", ":")), response_id),
+                )
+            return True
+
+    def get_response_action(self, action_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM response_actions WHERE action_id = ?", (action_id,)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def query_response_actions_for_case(self, case_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload FROM response_actions WHERE case_id = ? ORDER BY created_at ASC",
+                (case_id,),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def query_response_actions_for_plan(self, response_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload FROM response_actions WHERE response_id = ? ORDER BY created_at ASC",
+                (response_id,),
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
     def latest_event_time(self) -> str | None:

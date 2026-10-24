@@ -32,3 +32,7 @@ $data/*.sqlite3
 e2e_data/*.sqlite3
 e2e_data/*.sqlite3-shm
 e2e_data/*.sqlite3-wal
+e2e_data/monitor-status.json
+aegis_sandbox/
+artifacts/*
+!artifacts/response_agent_checkpoint_report.md

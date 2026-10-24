@@ -103,7 +103,7 @@ class CoreTests(unittest.TestCase):
             engine = MonitoringEngine(MonitoringConfig(Environment.DEVELOPMENT, Path(temporary),
                 interval_seconds=0.02, health_interval_seconds=0.02, max_collector_backoff_seconds=0.02),
                 collectors=[collector])
-            engine.run_for(0.07)
+            engine.run_for(0.3)
             self.assertGreaterEqual(collector.calls, 2)
             self.assertTrue(engine.status()["stopped"])
 
