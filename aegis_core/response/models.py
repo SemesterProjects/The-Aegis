@@ -281,6 +281,9 @@ class ResponsePlan:
     approval_requirements: list[str] = field(default_factory=list)
     policy_decisions: list[PolicyDecision] = field(default_factory=list)
     verification_plan: list[str] = field(default_factory=list)
+    # Optional, validated interpretation retained as advisory context only.
+    # It is never an authorization, a policy decision, or executable input.
+    intelligence_context: dict[str, Any] | None = None
     status: PlanStatus = PlanStatus.PLANNING
     response_id: str = field(default_factory=lambda: f"RSP-{uuid.uuid4().hex[:10].upper()}")
     created_at: str = field(default_factory=utc_now_iso)
@@ -309,4 +312,9 @@ class ResponsePlan:
             approval_requirements=list(payload.get("approval_requirements", [])),
             policy_decisions=[PolicyDecision.from_canonical(d) for d in decisions_raw],
             verification_plan=list(payload.get("verification_plan", [])),
+            intelligence_context=(
+                dict(payload["intelligence_context"])
+                if isinstance(payload.get("intelligence_context"), Mapping)
+                else None
+            ),
         )

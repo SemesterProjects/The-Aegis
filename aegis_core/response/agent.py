@@ -104,6 +104,14 @@ class ResponseAgent:
             investigation, case
         )
 
+        # Intelligence is already validated by IntelligenceService and persisted
+        # with the investigation.  It may give responders context, but it never
+        # creates actions, changes the deterministic classification, or bypasses
+        # this plan's policy/approval evaluation.
+        intelligence_context = self._advisory_intelligence_context(investigation)
+        if intelligence_context is not None:
+            decision += " A validated LLM interpretation is attached as non-authoritative responder context."
+
         # 4. Centralized Policy Evaluation
         evaluated_actions: list[ResponseAction] = []
         policy_decisions: list[PolicyDecision] = []
@@ -146,6 +154,7 @@ class ResponseAgent:
             approval_requirements=approval_reqs,
             policy_decisions=policy_decisions,
             verification_plan=verification_plan,
+            intelligence_context=intelligence_context,
             status=PlanStatus.PENDING_APPROVAL if any(a.status == ActionStatus.PENDING_APPROVAL for a in evaluated_actions) else PlanStatus.PLANNING,
         )
 
@@ -362,6 +371,7 @@ class ResponseAgent:
             "investigation_confidence": inv_dict.get("confidence"),
             "decision": plan_dict.get("decision"),
             "risk_assessment": plan_dict.get("risk_assessment"),
+            "intelligence_context": plan_dict.get("intelligence_context"),
             "policy_decisions": plan_dict.get("policy_decisions"),
             "actions": actions,
             "evidence_chain_valid": self.store.verify_chain(),
@@ -401,3 +411,30 @@ class ResponseAgent:
         )
         logger.warning("Response planning aborted for case %s: %s", case_id, reason)
         return plan
+
+    @staticmethod
+    def _advisory_intelligence_context(investigation: InvestigationResult) -> dict[str, Any] | None:
+        """Return completed LLM context without granting it response authority."""
+        interpretation = investigation.llm_interpretation
+        if interpretation is None:
+            return None
+        try:
+            from ..intelligence import InterpretationStatus
+            if interpretation.status is not InterpretationStatus.COMPLETE:
+                return None
+            cited = set(interpretation.evidence_event_ids)
+            known = set(investigation.evidence_ids_used)
+            if not cited or not cited.issubset(known):
+                return None
+            return {
+                "status": interpretation.status.value,
+                "provider": interpretation.provider,
+                "model": interpretation.model,
+                "summary": interpretation.summary,
+                "insights": list(interpretation.insights),
+                "uncertainties": list(interpretation.uncertainties),
+                "evidence_event_ids": list(interpretation.evidence_event_ids),
+                "authority": "ADVISORY_ONLY",
+            }
+        except (AttributeError, TypeError, ValueError):
+            return None

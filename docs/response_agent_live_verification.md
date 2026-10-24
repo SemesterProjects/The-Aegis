@@ -1,5 +1,8 @@
 # Response Agent live verification
 
+For the literal Windows operator walkthrough, including the LLM-to-response
+handoff, use [Windows LLM and Response Agent walkthrough](windows_llm_response_agent_walkthrough.md).
+
 ## Scope and safety boundary
 
 The Aegis Response Agent consumes a persisted `InvestigationCase` and its

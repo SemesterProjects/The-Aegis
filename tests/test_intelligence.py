@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 from aegis_core.intelligence import IntelligenceService, InterpretationStatus
 from aegis_core.intelligence import service
 from aegis_core.investigation.agent import InvestigationAgent
+from aegis_core.response.agent import ResponseAgent
 from aegis_core.models import Event, EventKind
 from aegis_core.storage import EvidenceStore
 from aegis_core.triage import InvestigationCase
@@ -50,6 +51,25 @@ def test_llm_interpretation_is_grounded_and_does_not_change_verdict(tmp_path: Pa
         assert store.get_investigation_result(case.case_id)["llm_interpretation"]["status"] == "COMPLETE"
         assert result.classification.value in {"BENIGN", "SUSPICIOUS", "MALICIOUS", "UNKNOWN"}
         assert provider.payload["deterministic_classification"] == result.classification.value
+    finally:
+        store.close()
+
+
+def test_validated_llm_interpretation_reaches_response_plan_as_advisory(tmp_path: Path) -> None:
+    provider = FakeProvider(lambda payload: {
+        "summary": "Responder should review the observed evidence chain.",
+        "insights": ["The cited process event is part of the deterministic case."],
+        "evidence_event_ids": payload["allowed_event_ids"][:1],
+        "uncertainties": ["No reputation source was supplied."],
+    })
+    store, _, case, result = _result_with_case(tmp_path, IntelligenceService(provider, model="test-model"))
+    try:
+        plan = ResponseAgent(store).plan(case.case_id)
+        assert result.llm_interpretation.status is InterpretationStatus.COMPLETE
+        assert plan.intelligence_context is not None
+        assert plan.intelligence_context["authority"] == "ADVISORY_ONLY"
+        assert plan.intelligence_context["evidence_event_ids"] == list(result.llm_interpretation.evidence_event_ids)
+        assert all(action.status.name != "APPROVED" for action in plan.actions)
     finally:
         store.close()
 
