@@ -650,3 +650,25 @@ def test_local_lab_adapter_rejects_outside_path_and_unregistered_pid(tmp_path: P
     rejected_process = adapter.execute(terminate, dry_run=False)
     assert rejected_process.success is False
     assert "explicitly registered" in (rejected_process.error or "")
+
+
+def test_local_lab_adapter_rejects_registered_pid_when_identity_changes(tmp_path: Path) -> None:
+    """A live demo PID must also match its recorded identity before any kill."""
+    import os
+    lab_root = tmp_path / "lab"
+    lab_root.mkdir()
+    adapter = LocalLabExecutionAdapter(
+        lab_root,
+        allowed_pids={os.getpid()},
+        process_identities={os.getpid(): {"create_time": 0.0, "marker": "aegis-demo-never-matches"}},
+    )
+    action = ResponseAction(
+        action_type=ActionType.TERMINATE_PROCESS,
+        target={"pid": os.getpid(), "name": "python"},
+        reason="test identity guard",
+        evidence_ids=["event-1"],
+        risk_level=RiskLevel.HIGH,
+    )
+    rejected = adapter.execute(action, dry_run=False)
+    assert rejected.success is False
+    assert "identity" in (rejected.error or "").lower() or "creation time" in (rejected.error or "").lower()

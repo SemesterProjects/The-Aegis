@@ -36,3 +36,12 @@ e2e_data/monitor-status.json
 aegis_sandbox/
 artifacts/*
 !artifacts/response_agent_checkpoint_report.md
+
+# Hyper-V and other virtual-machine artifacts belong in the dedicated lab,
+# never in the source repository.
+*.vhd
+*.vhdx
+*.avhd
+*.avhdx
+*.iso
+*.qcow2

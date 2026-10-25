@@ -185,9 +185,22 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
     - It does not implement firewall or host-isolation operations.
     """
 
-    def __init__(self, lab_root: Path, *, allowed_pids: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        lab_root: Path,
+        *,
+        allowed_pids: set[int] | None = None,
+        process_identities: dict[int, dict[str, object]] | None = None,
+    ) -> None:
         self.lab_root = lab_root.resolve()
         self.allowed_pids = frozenset(allowed_pids or ())
+        # A PID alone is not a durable identity. Demos that opt into live
+        # termination register creation time and a run marker so a reused PID
+        # or an unrelated process fails closed immediately before OS action.
+        self.process_identities = {
+            int(pid): dict(identity)
+            for pid, identity in (process_identities or {}).items()
+        }
         self.quarantine_dir = self.lab_root / "quarantine"
         self.quarantine_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,6 +268,14 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
                         adapter_name="LocalLabExecutionAdapter",
                         simulated=False,
                         error="Refusing process termination: PID is not an explicitly registered lab process.",
+                    )
+                identity_error = self._verify_process_identity(pid)
+                if identity_error is not None:
+                    return ExecutionResult(
+                        success=False,
+                        adapter_name="LocalLabExecutionAdapter",
+                        simulated=False,
+                        error=identity_error,
                     )
                 import subprocess
                 if os.name == "nt":
@@ -324,3 +345,30 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
             simulated=False,
             error="Rollback not supported for this action type.",
         )
+
+    def _verify_process_identity(self, pid: int) -> str | None:
+        """Confirm an optional registered identity just before termination."""
+        expected = self.process_identities.get(pid)
+        if expected is None:
+            return None
+        try:
+            import psutil
+            process = psutil.Process(pid)
+            actual_create_time = process.create_time()
+            expected_create_time = expected.get("create_time")
+            if not isinstance(expected_create_time, (int, float)):
+                return "Refusing process termination: registered identity lacks create_time."
+            if abs(actual_create_time - float(expected_create_time)) > 0.01:
+                return "Refusing process termination: PID creation time no longer matches registered lab process."
+            marker = expected.get("marker")
+            if not isinstance(marker, str) or not marker:
+                return "Refusing process termination: registered identity lacks demo run marker."
+            if marker not in " ".join(process.cmdline()):
+                return "Refusing process termination: process command line does not match registered demo run marker."
+        except ImportError:
+            return "Refusing process termination: psutil is required to verify a registered process identity."
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return "Refusing process termination: registered lab process is unavailable for identity verification."
+        except Exception as exc:
+            return f"Refusing process termination: identity verification failed ({type(exc).__name__})."
+        return None

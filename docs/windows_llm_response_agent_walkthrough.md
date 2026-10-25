@@ -39,9 +39,9 @@ Set a secret without displaying it:
 ```powershell
 $secureKey = Read-Host 'Paste provider key' -AsSecureString
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-$env:GEMINI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+$env:AEGIS_LLM_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-if ([string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) { throw 'Key was not set' }
+if ([string]::IsNullOrWhiteSpace($env:AEGIS_LLM_API_KEY)) { throw 'Key was not set' }
 'Credential present in this PowerShell session.'
 ```
 

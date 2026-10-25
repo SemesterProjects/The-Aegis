@@ -7,10 +7,15 @@ name = "aegis-core"
 version = "0.1.0"
 description = "Cross-platform, safety-governed endpoint monitoring core"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "psutil>=5.9",
+    "watchdog>=3.0",
+]
 
 [project.optional-dependencies]
-enhanced = ["psutil>=5.9", "watchdog>=3.0"]
+# Retained so existing documented `.[enhanced,test]` commands remain valid.
+# Process/network collection and native file watching are core dependencies.
+enhanced = []
 test = ["pytest>=8"]
 
 [project.scripts]

@@ -55,6 +55,23 @@ def _process_event(
     )
 
 
+def test_case_processes_are_prioritized_over_unrelated_expanded_pids(tmp_path: Path) -> None:
+    """Host-wide related telemetry must not displace the case's own PIDs."""
+    store = EvidenceStore(tmp_path / "evidence.sqlite3")
+    try:
+        agent = InvestigationAgent(store)
+        state = InvestigationState("INC-PRIORITY", InvestigationBudget.tight())
+        state.known_events = {
+            "unrelated": _process_event(11, "other.exe").canonical(),
+            "case": _process_event(9001, "demo.exe").canonical(),
+        }
+        actions = agent._actions_for_process_gaps(state, {"related_processes": [{"pid": 9001}]})
+        process_info_pids = [a.arguments["pid"] for a in actions if a.tool_name == "get_process_info"]
+        assert process_info_pids[0] == 9001
+    finally:
+        store.close()
+
+
 def _file_event(path: str, action: str = "create", pid: int | None = None, offset: float = 0.0) -> Event:
     data: dict[str, Any] = {"path": path, "action": action, "suffix": Path(path).suffix}
     if pid is not None:

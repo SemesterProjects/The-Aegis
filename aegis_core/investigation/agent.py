@@ -558,6 +558,7 @@ class InvestigationAgent:
         actions = []
         # Collect PIDs from known events + case
         pids: set[int] = set()
+        case_pids: set[int] = set()
         for ev in state.known_events.values():
             pid_raw = ev.get("data", {}).get("pid")
             if pid_raw is not None:
@@ -569,11 +570,17 @@ class InvestigationAgent:
             pid_raw = proc.get("pid")
             if pid_raw is not None:
                 try:
-                    pids.add(int(pid_raw))
+                    case_pids.add(int(pid_raw))
                 except (TypeError, ValueError):
                     pass
 
-        for pid in sorted(pids)[:8]:
+        # The related-event expansion can add many unrelated host PIDs (for
+        # example connection snapshots).  Always investigate case-linked PIDs
+        # first so the deterministic response plan remains grounded in the
+        # actual detection, then use any remaining bounded capacity for
+        # adjacent telemetry.
+        prioritized_pids = sorted(case_pids) + sorted(pids - case_pids)
+        for pid in prioritized_pids[:8]:
             if not state.already_queried(f"proc_info:{pid}"):
                 actions.append(InvestigationAction(
                     tool_name="get_process_info",
