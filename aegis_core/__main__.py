@@ -5,6 +5,7 @@ import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .capabilities import discover_capabilities
 from .collectors import FilePollingCollector, ProcessSnapshotCollector
@@ -169,12 +170,13 @@ def investigate_command(argv: list[str]) -> int:
     parser.add_argument("--max-tool-calls", type=int, default=30)
     parser.add_argument("--max-seconds", type=float, default=120.0)
     parser.add_argument("--json", action="store_true", help="output result as JSON")
+    parser.add_argument("--llm", action="store_true", help="add an optional, evidence-bounded LLM interpretation")
     args = parser.parse_args(argv)
     case_id = args.case_id_option or args.case_id
     if args.case_id == "run":
         case_id = args.case_id_option
     if args.case_id == "pending" or args.operation == "pending":
-        return investigate_pending(args.data_dir, args.max_tool_calls, args.max_seconds, args.json)
+        return investigate_pending(args.data_dir, args.max_tool_calls, args.max_seconds, args.json, args.llm)
     if not case_id:
         parser.error("provide a case ID or use `pending`")
 
@@ -193,7 +195,7 @@ def investigate_command(argv: list[str]) -> int:
             max_tool_calls=args.max_tool_calls,
             max_investigation_time_seconds=args.max_seconds,
         )
-        agent = InvestigationAgent(store, budget=budget)
+        agent = InvestigationAgent(store, budget=budget, intelligence=_intelligence_from_args(args.llm))
         result = agent.investigate(case_id)
         if args.json:
             print(json_dumps(result.canonical()))
@@ -205,7 +207,7 @@ def investigate_command(argv: list[str]) -> int:
 
 
 def investigate_pending(
-    data_dir: Path, max_tool_calls: int, max_seconds: float, as_json: bool,
+    data_dir: Path, max_tool_calls: int, max_seconds: float, as_json: bool, use_llm: bool = False,
 ) -> int:
     """Process all currently NEW cases, one at a time."""
     database = data_dir / "evidence.sqlite3"
@@ -227,6 +229,7 @@ def investigate_pending(
                     max_tool_calls=max_tool_calls,
                     max_investigation_time_seconds=max_seconds,
                 ),
+                intelligence=_intelligence_from_args(use_llm),
             ).investigate(case["case_id"])
             if as_json:
                 print(json_dumps(result.canonical()))
@@ -237,6 +240,14 @@ def investigate_pending(
         return exit_code
     finally:
         store.close()
+
+
+def _intelligence_from_args(enabled: bool) -> object | None:
+    """Create the optional integration only for explicit --llm invocations."""
+    if not enabled:
+        return None
+    from .intelligence import IntelligenceService
+    return IntelligenceService.from_environment(enabled=True)
 
 
 def _print_result_summary(result: object) -> None:
@@ -285,9 +296,15 @@ def _print_result_summary(result: object) -> None:
         print(f"  Recommended Actions (READ-ONLY - requires human approval):")
         for i, action in enumerate(r.recommended_actions, 1):
             print(f"    {i}. {_safe_txt(action)}")
+    if r.llm_interpretation is not None:
+        llm = r.llm_interpretation
+        print("-" * 64)
+        print(f"  LLM interpretation: {llm.status.value} (non-authoritative)")
+        if llm.summary:
+            print(f"    {llm.summary}")
+        if llm.failure_reason:
+            print(f"    Note: {llm.failure_reason}")
     print("=" * 64)
-
-
 
 
 def respond_command(argv: list[str]) -> int:
@@ -451,6 +468,8 @@ def _print_plan_summary(plan: Any) -> None:
 
 
 def main() -> int:
+    from .config import load_local_env
+    load_local_env()
     if len(sys.argv) > 1 and sys.argv[1] == "monitor":
         return monitor_command(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "investigate":

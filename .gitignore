@@ -1,5 +1,11 @@
 # Local product artifacts
 The Aegis Handbook.pdf
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
 
 # Common editor and OS artifacts
 .DS_Store
@@ -22,5 +28,20 @@ network_events.jsonl
 network_monitor
 
 # Runtime evidence sidecars (the primary database is intentionally tracked)
+$data/*.sqlite3
+e2e_data/*.sqlite3
 e2e_data/*.sqlite3-shm
 e2e_data/*.sqlite3-wal
+e2e_data/monitor-status.json
+aegis_sandbox/
+artifacts/*
+!artifacts/response_agent_checkpoint_report.md
+
+# Hyper-V and other virtual-machine artifacts belong in the dedicated lab,
+# never in the source repository.
+*.vhd
+*.vhdx
+*.avhd
+*.avhdx
+*.iso
+*.qcow2

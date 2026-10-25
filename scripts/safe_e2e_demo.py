@@ -85,7 +85,13 @@ def main() -> int:
         (watch / "safe-0.txt").rename(renamed)
         renamed.unlink()
 
-    # Step 4: Run observation cycle 1 (diffs against baseline to capture process starts and file changes)
+    # Watchdog-based collectors receive filesystem notifications asynchronously.
+    # Give the observer one bounded interval before collecting, then retain a
+    # second cycle so both watchdog and polling fallbacks can report activity.
+    time.sleep(0.75)
+
+    # Step 4: Run observation cycles (diffs against baseline to capture process starts and file changes)
+    engine.run_once()
     engine.run_once()
 
     # Step 5: Terminate child process and run post-exit cycle 2 (captures process exit)

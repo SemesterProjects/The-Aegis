@@ -76,11 +76,7 @@ class OutcomeVerifier:
             )
 
         elif action.action_type == ActionType.NOTIFY_RESPONDER:
-            return VerificationResult(
-                verified=True,
-                method="queue_status_check",
-                details="Notification dispatch confirmed delivered to responder channel.",
-            )
+            return self._unimplemented_live_verification(action)
 
         elif action.action_type == ActionType.TERMINATE_PROCESS:
             pid = t.get("pid")
@@ -131,33 +127,28 @@ class OutcomeVerifier:
                     error="File quarantine incomplete or failed.",
                 )
 
-        elif action.action_type in (ActionType.BLOCK_NETWORK_IP, ActionType.ISOLATE_HOST):
-            # For network and host containment, live verification depends on firewall adapter
-            return VerificationResult(
-                verified=True,
-                method="firewall_rule_inspection",
-                details=f"Containment rule active for target {t}.",
-            )
-
-        elif action.action_type == ActionType.REQUEST_ADDITIONAL_TELEMETRY:
-            return VerificationResult(
-                verified=True,
-                method="collector_registration_check",
-                details="Telemetry collection instruction dispatched to monitoring core.",
-            )
-
-        elif action.action_type == ActionType.ACCOUNT_REVIEW:
-            return VerificationResult(
-                verified=True,
-                method="iam_ticket_query",
-                details="Account review request acknowledged by identity management interface.",
-            )
+        elif action.action_type in (
+            ActionType.BLOCK_NETWORK_IP,
+            ActionType.ISOLATE_HOST,
+            ActionType.REQUEST_ADDITIONAL_TELEMETRY,
+            ActionType.ACCOUNT_REVIEW,
+        ):
+            return self._unimplemented_live_verification(action)
 
         return VerificationResult(
             verified=False,
             method="unsupported_verification",
             details=f"No verification mechanism implemented for {action.action_type.value}.",
             error="Unsupported action verification.",
+        )
+
+    @staticmethod
+    def _unimplemented_live_verification(action: ResponseAction) -> VerificationResult:
+        return VerificationResult(
+            verified=False,
+            method="unsupported_live_verification",
+            details=f"No independent live verification is implemented for {action.action_type.value}.",
+            error="The action must not be reported as verified without a concrete adapter and verifier.",
         )
 
     def _check_pid_alive(self, pid: int) -> bool:

@@ -54,10 +54,23 @@ Per project architecture (`OSInstruction.txt`), Aegis is designed as a **cross-p
 - **Aegis Core (`aegis_core/`):** 13 implemented modules including the unified `MonitoringEngine`, `ProcessLifecycleCollector`, `FileEventCollector` (with `watchdog` and polling fallback), `AuthEventCollector` (supporting `journalctl`/`auth.log` on Linux and `wevtutil` on Windows), and `NetworkBridgeCollector`.
 - **Network Telemetry Subsystem (`network_monitor/`):** Platform adapters for Linux (polling + eBPF connection tracing), Windows (psutil connection polling, DNS, process attribution), and macOS (capability boundaries and stubs).
 - **Evidence & Detection:** Tamper-evident SQLite `EvidenceStore` with cryptographic hash chain, four explainable detectors (`AuthFailureBurstDetector`, `FileChangeBurstDetector`, `NetworkRateDetector`, `NewProcessWithNetworkDetector`), in-memory `CorrelationIndex`, and `Timeline` reconstruction.
-- **Automated Test Suite:** 246 deterministic tests passing across `tests/` and `network_monitor/tests/`.
+- **Automated Test Suite:** deterministic tests across `tests/` and `network_monitor/tests/`; run `python -m pytest -q` for the current count.
 - **E2E Validation:** End-to-end real host validation is available through
   `validate_e2e.py` and the isolated procedure in the
   [Aegis Demonstration Runbook](docs/AEGIS_DEMO_RUNBOOK.md).
+- **Optional LLM interpretation:** A bounded, evidence-grounded explanation
+  layer can enrich a completed investigation without changing deterministic
+  classification or gaining host/tool access. See [LLM setup](docs/LLM_INTELLIGENCE.md).
+
+## Installation
+
+Use Python 3.11 or newer. The base installation includes the process and file
+collector dependencies required for the supported monitoring path; install the
+test extra when running the test suite.
+
+```powershell
+python -m pip install -e ".[test]"
+```
 
 ### Quick Start / CLI Usage
 

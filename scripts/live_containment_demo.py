@@ -121,7 +121,7 @@ def main() -> None:
         allow_containment_on_suspicious=True,
         min_confidence_for_containment=0.40,
     )
-    live_adapter = LocalLabExecutionAdapter(lab_root=sandbox_path)
+    live_adapter = LocalLabExecutionAdapter(lab_root=sandbox_path, allowed_pids={target_pid})
     resp_agent = ResponseAgent(store, policy_config=live_policy, adapter=live_adapter)
 
     plan = resp_agent.plan(case.case_id)
@@ -138,8 +138,11 @@ def main() -> None:
         if not action.requires_approval:
             # Non-disruptive
             print(f"\n[{i}] {action.action_type.value}: Non-disruptive.")
+            if action.status == ActionStatus.UNSUPPORTED:
+                print("    --> No live handler is implemented; action remains UNSUPPORTED.")
+                continue
             exec_res = resp_agent.execute_action(case.case_id, action.action_id, live=True)
-            print(f"    --> Executed & Logged: {exec_res.status.value} [OK]")
+            print(f"    --> Execution status: {exec_res.status.value}")
         else:
             print(f"\n[{i}] DISRUPTIVE ACTION REQUIRES SOC OPERATOR APPROVAL:")
             print(f"    Action Type : {action.action_type.value}")
@@ -199,7 +202,7 @@ def main() -> None:
     # Check if file was really moved to quarantine/
     quarantine_files = list((sandbox_path / "quarantine").glob("*"))
     print(f"  2. Original File Exists      : {payload_file.exists()} (Must be False)")
-  
+
     print(f"  3. Quarantine Vault Files    : {[f.name for f in quarantine_files]} (Must contain threat)")
 
     # 9. Audit Trail

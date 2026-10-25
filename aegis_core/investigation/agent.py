@@ -116,10 +116,13 @@ class InvestigationAgent:
         self,
         store: EvidenceStore,
         budget: InvestigationBudget | None = None,
+        intelligence: Any | None = None,
     ) -> None:
         self._store = store
         self._tools = InvestigationTools(store)
         self._budget = budget or InvestigationBudget.default()
+        # Optional and downstream only. It has no access to tools or storage.
+        self._intelligence = intelligence
         self.last_state: InvestigationState | None = None
 
     # ------------------------------------------------------------------
@@ -169,6 +172,11 @@ class InvestigationAgent:
         result.agent_end_time = datetime.now(timezone.utc).isoformat()
         result.tool_calls_made = state.tool_call_count()
         result.evidence_ids_used = state.all_evidence_ids()
+        if self._intelligence is not None:
+            try:
+                result.llm_interpretation = self._intelligence.interpret(result)
+            except Exception as exc:
+                logger.warning("LLM interpretation failed safely for case_id=%s: %s", case_id, type(exc).__name__)
         self._store.append_investigation_result(result)
         final_case_status = {
             InvestigationStatus.ERROR: "ERROR",
@@ -550,6 +558,7 @@ class InvestigationAgent:
         actions = []
         # Collect PIDs from known events + case
         pids: set[int] = set()
+        case_pids: set[int] = set()
         for ev in state.known_events.values():
             pid_raw = ev.get("data", {}).get("pid")
             if pid_raw is not None:
@@ -561,11 +570,17 @@ class InvestigationAgent:
             pid_raw = proc.get("pid")
             if pid_raw is not None:
                 try:
-                    pids.add(int(pid_raw))
+                    case_pids.add(int(pid_raw))
                 except (TypeError, ValueError):
                     pass
 
-        for pid in sorted(pids)[:8]:
+        # The related-event expansion can add many unrelated host PIDs (for
+        # example connection snapshots).  Always investigate case-linked PIDs
+        # first so the deterministic response plan remains grounded in the
+        # actual detection, then use any remaining bounded capacity for
+        # adjacent telemetry.
+        prioritized_pids = sorted(case_pids) + sorted(pids - case_pids)
+        for pid in prioritized_pids[:8]:
             if not state.already_queried(f"proc_info:{pid}"):
                 actions.append(InvestigationAction(
                     tool_name="get_process_info",

@@ -9,13 +9,10 @@ Provides:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 import os
 from pathlib import Path
 import shutil
-import signal
 import time
-from typing import Any
 
 from .models import (
     ActionStatus,
@@ -183,25 +180,32 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
     """Strictly bounded execution adapter for isolated lab / sandbox test environments.
 
     Safety constraints:
-    - Only quarantines files located inside the designated sandbox quarantine root.
-    - Process termination requires an explicit test process marker in target.
-    - Network blocking is simulated via local hosts/routing simulation or logging.
+    - Only quarantines files located inside the designated sandbox root.
+    - Process termination is limited to explicitly registered test PIDs.
+    - It does not implement firewall or host-isolation operations.
     """
 
-    def __init__(self, lab_root: Path) -> None:
-        self.lab_root = lab_root
-        self.quarantine_dir = lab_root / "quarantine"
+    def __init__(
+        self,
+        lab_root: Path,
+        *,
+        allowed_pids: set[int] | None = None,
+        process_identities: dict[int, dict[str, object]] | None = None,
+    ) -> None:
+        self.lab_root = lab_root.resolve()
+        self.allowed_pids = frozenset(allowed_pids or ())
+        # A PID alone is not a durable identity. Demos that opt into live
+        # termination register creation time and a run marker so a reused PID
+        # or an unrelated process fails closed immediately before OS action.
+        self.process_identities = {
+            int(pid): dict(identity)
+            for pid, identity in (process_identities or {}).items()
+        }
+        self.quarantine_dir = self.lab_root / "quarantine"
         self.quarantine_dir.mkdir(parents=True, exist_ok=True)
 
     def can_execute(self, action: ResponseAction) -> bool:
-        return action.action_type in {
-            ActionType.RECORD_INCIDENT,
-            ActionType.NOTIFY_RESPONDER,
-            ActionType.REQUEST_ADDITIONAL_TELEMETRY,
-            ActionType.QUARANTINE_FILE,
-            ActionType.TERMINATE_PROCESS,
-            ActionType.BLOCK_NETWORK_IP,
-        }
+        return action.action_type in {ActionType.QUARANTINE_FILE, ActionType.TERMINATE_PROCESS}
 
     def execute(self, action: ResponseAction, dry_run: bool = True) -> ExecutionResult:
         if dry_run:
@@ -214,8 +218,7 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
             try:
                 # Must be inside lab_root to be manipulated live
                 resolved_src = src_path.resolve()
-                resolved_lab = self.lab_root.resolve()
-                if not str(resolved_src).startswith(str(resolved_lab)):
+                if not resolved_src.is_relative_to(self.lab_root):
                     return ExecutionResult(
                         success=False,
                         adapter_name="LocalLabExecutionAdapter",
@@ -232,6 +235,13 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
                     )
 
                 dest_path = self.quarantine_dir / f"{resolved_src.name}.quarantine"
+                if dest_path.exists():
+                    return ExecutionResult(
+                        success=False,
+                        adapter_name="LocalLabExecutionAdapter",
+                        simulated=False,
+                        error=f"Refusing to overwrite existing quarantine artifact: {dest_path}",
+                    )
                 shutil.move(resolved_src, dest_path)
                 return ExecutionResult(
                     success=True,
@@ -252,18 +262,39 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
         if action.action_type == ActionType.TERMINATE_PROCESS:
             pid = action.target.get("pid")
             try:
-                if pid:
-                    import subprocess
-                    if os.name == "nt":
-                        subprocess.run(["taskkill", "/F", "/PID", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    elif hasattr(os, "kill"):
-                        try:
-                            import signal
-                            sig = getattr(signal, "SIGTERM", 15)
-                            os.kill(int(pid), sig)
-                        except ProcessLookupError:
-                            pass
-                    time.sleep(0.2)
+                if not isinstance(pid, int) or pid not in self.allowed_pids:
+                    return ExecutionResult(
+                        success=False,
+                        adapter_name="LocalLabExecutionAdapter",
+                        simulated=False,
+                        error="Refusing process termination: PID is not an explicitly registered lab process.",
+                    )
+                identity_error = self._verify_process_identity(pid)
+                if identity_error is not None:
+                    return ExecutionResult(
+                        success=False,
+                        adapter_name="LocalLabExecutionAdapter",
+                        simulated=False,
+                        error=identity_error,
+                    )
+                import subprocess
+                if os.name == "nt":
+                    result = subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                    if result.returncode != 0:
+                        return ExecutionResult(
+                            success=False,
+                            adapter_name="LocalLabExecutionAdapter",
+                            simulated=False,
+                            error=f"taskkill failed for registered lab PID {pid} (exit {result.returncode}).",
+                        )
+                else:
+                    os.kill(pid, 15)
+                time.sleep(0.2)
                 return ExecutionResult(
                     success=True,
                     adapter_name="LocalLabExecutionAdapter",
@@ -279,18 +310,13 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
                     error=f"Process termination failed: {exc}",
                     execution_time_seconds=time.monotonic() - start_time,
                 )
-
-        if action.action_type == ActionType.BLOCK_NETWORK_IP:
-            ip = action.target.get("ip")
-            return ExecutionResult(
-                success=True,
-                adapter_name="LocalLabExecutionAdapter",
-                simulated=False,
-                output=f"Network firewall rule applied for IP {ip}.",
-                execution_time_seconds=time.monotonic() - start_time,
-            )
-
-        return DryRunExecutionAdapter().execute(action, dry_run=False)
+        return ExecutionResult(
+            success=False,
+            adapter_name="LocalLabExecutionAdapter",
+            simulated=False,
+            error=f"No live lab handler exists for {action.action_type.value}.",
+            execution_time_seconds=time.monotonic() - start_time,
+        )
 
     def rollback(self, action: ResponseAction) -> ExecutionResult:
         if action.action_type == ActionType.QUARANTINE_FILE:
@@ -319,3 +345,30 @@ class LocalLabExecutionAdapter(ExecutionAdapter):
             simulated=False,
             error="Rollback not supported for this action type.",
         )
+
+    def _verify_process_identity(self, pid: int) -> str | None:
+        """Confirm an optional registered identity just before termination."""
+        expected = self.process_identities.get(pid)
+        if expected is None:
+            return None
+        try:
+            import psutil
+            process = psutil.Process(pid)
+            actual_create_time = process.create_time()
+            expected_create_time = expected.get("create_time")
+            if not isinstance(expected_create_time, (int, float)):
+                return "Refusing process termination: registered identity lacks create_time."
+            if abs(actual_create_time - float(expected_create_time)) > 0.01:
+                return "Refusing process termination: PID creation time no longer matches registered lab process."
+            marker = expected.get("marker")
+            if not isinstance(marker, str) or not marker:
+                return "Refusing process termination: registered identity lacks demo run marker."
+            if marker not in " ".join(process.cmdline()):
+                return "Refusing process termination: process command line does not match registered demo run marker."
+        except ImportError:
+            return "Refusing process termination: psutil is required to verify a registered process identity."
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return "Refusing process termination: registered lab process is unavailable for identity verification."
+        except Exception as exc:
+            return f"Refusing process termination: identity verification failed ({type(exc).__name__})."
+        return None

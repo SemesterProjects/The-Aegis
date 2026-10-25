@@ -188,6 +188,10 @@ class InvestigationResult:
     uncertainties: list[str] = field(default_factory=list)
     recommended_actions: list[str] = field(default_factory=list)
 
+    # Optional LLM output. It is interpretation only: observed evidence and
+    # deterministic classification remain authoritative.
+    llm_interpretation: Any | None = None
+
     # Audit trail
     agent_start_time: str = ""      # ISO-8601 UTC
     agent_end_time: str = ""        # ISO-8601 UTC
@@ -203,6 +207,8 @@ class InvestigationResult:
                 return v.value
             if isinstance(v, list):
                 return [_serial(i) for i in v]
+            if isinstance(v, dict):
+                return {str(k): _serial(value) for k, value in v.items()}
             if hasattr(v, "__dataclass_fields__"):
                 return {k: _serial(getattr(v, k)) for k in v.__dataclass_fields__}
             return v
@@ -242,6 +248,7 @@ class InvestigationResult:
             investigation_coverage=InvestigationCoverage(**coverage),
             uncertainties=list(payload.get("uncertainties", [])),
             recommended_actions=list(payload.get("recommended_actions", [])),
+            llm_interpretation=_interpretation_from_payload(payload.get("llm_interpretation")),
             agent_start_time=str(payload.get("agent_start_time", "")),
             agent_end_time=str(payload.get("agent_end_time", "")),
             tool_calls_made=int(payload.get("tool_calls_made", 0)),
@@ -253,3 +260,10 @@ class InvestigationResult:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _interpretation_from_payload(payload: Any) -> Any | None:
+    if not payload:
+        return None
+    from ..intelligence import LLMInterpretation
+    return LLMInterpretation.from_canonical(payload)
